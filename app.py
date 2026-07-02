@@ -381,37 +381,37 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── BENTO SCORE ROW ──
+# ── CIRCULAR SCORE ROW ──
 col_score, col_s1, col_s2, col_s3, col_s4 = st.columns([2, 1.1, 1.1, 1.1, 1.1])
 
 with col_score:
     st.markdown(f"""
-    <div class="ryo-score-card {ov_cls}">
-      <div class="ryo-label" style="margin-bottom:10px">Overall Score</div>
-      <div class="ryo-score-number" style="color:{ov_color}">{overall}</div>
-      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:{ov_color};
-        font-weight:600;letter-spacing:0.12em;text-transform:uppercase;margin-top:4px">
-        {ov_status}
+    <div style="display:flex;flex-direction:column;align-items:center;margin-top:10px">
+      <div style="width:140px;height:140px;border-radius:50%;border:8px solid {ov_color};display:flex;flex-direction:column;align-items:center;justify-content:center">
+        <div style="font-size:46px;font-weight:700;color:{ov_color};line-height:1;margin-bottom:2px">{overall}</div>
+        <div style="font-size:14px;color:#9CA3AF">/100</div>
       </div>
-      <div class="ryo-score-domain">{audit['domain']}</div>
+      <div style="font-size:14px;font-weight:700;color:{ov_color};margin-top:16px;letter-spacing:0.05em">{ov_status}</div>
+      <div style="font-size:13px;color:#9CA3AF;margin-top:4px">{btype_label}</div>
     </div>
     """, unsafe_allow_html=True)
 
 https_val   = "✓ HTTPS" if audit.get("is_https") else "✗ NO SSL"
-https_color = "#10B981" if audit.get("is_https") else "#F43F5E"
+https_color = "#10B981" if audit.get("is_https") else "#EF4444"
+https_bg    = "#F0FDF4" if audit.get("is_https") else "#FEE2E2"
 rt = audit.get('response_time', '?')
 
-for col, val, name, color in [
-    (col_s1, str(critical_n), "Critical",  "#F43F5E"),
-    (col_s2, str(medium_n),   "Medium",    "#F59E0B"),
-    (col_s3, https_val,       "Security",  https_color),
-    (col_s4, f"{rt}s",        "Load Time", "#3B82F6"),
+for col, val, name, color, bg in [
+    (col_s1, str(critical_n), "CRITICAL",  "#EF4444", "#FEE2E2"),
+    (col_s2, str(medium_n),   "MEDIUM",    "#F59E0B", "#FEF3C7"),
+    (col_s3, https_val,       "SECURITY",  https_color, https_bg),
+    (col_s4, f"{rt}s",        "LOAD TIME", "#0EA5E9", "#F0F9FF"),
 ]:
     with col:
         st.markdown(f"""
-        <div class="ryo-stat" style="height:140px">
-          <div class="ryo-label">{name}</div>
-          <div class="ryo-stat-value" style="color:{color}">{val}</div>
+        <div style="background:{bg};border-radius:12px;height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;margin-top:20px">
+          <div style="font-size:28px;font-weight:700;color:{color};line-height:1;margin-bottom:8px">{val}</div>
+          <div style="font-size:11px;font-weight:700;color:{color};text-transform:uppercase;letter-spacing:0.05em">{name}</div>
         </div>
         """, unsafe_allow_html=True)
 
