@@ -30,7 +30,7 @@ BUSINESS_TYPES = {
     "lawyer": ["law", "legal", "attorney", "solicitor", "barrister", "lawyer", "litigation", "counsel", "firm", "injury", "divorce", "criminal", "property law"],
     "real_estate": ["real estate", "realty", "property", "homes for sale", "rent", "lease", "agent", "apartment", "listings", "mortgage", "landlord"],
     "medical": ["clinic", "doctor", "physician", "gp", "health", "medical", "surgery", "patient", "appointment", "specialist", "hospital", "urgent care", "telehealth"],
-    "accountant": ["accountant", "accounting", "tax", "bookkeeping", "cpa", "financial", "payroll", "audit", "irs", "bas", "xero", "quickbooks"],
+    "accountant": ["accountant", "accounting", "tax return", "bookkeeping", "cpa", "financial planning", "payroll", "bas", "xero", "quickbooks", "tax agent", "chartered accountant"],
     "tradie": ["electrician", "electric", "carpenter", "carpentry", "builder", "builder", "painting", "painter", "roof", "roofer", "tiler", "landscap", "garden", "cleaning", "cleaner", "pest control", "locksmith"],
     "retail": ["shop", "store", "buy", "purchase", "product", "collection", "fashion", "clothing", "shoes", "accessories", "jewellery", "jewelry", "gifts"],
 }
@@ -110,15 +110,39 @@ BUSINESS_IMPACT = {
 }
 
 
-def detect_business_type(soup: BeautifulSoup, url: str) -> str:
-    text = soup.get_text(" ", strip=True).lower() + " " + url.lower()
+def detect_business_type(soup: BeautifulSoup, url: str) -> tuple:
+    """Returns (business_type, is_confident).
+    is_confident=False means we could not clearly identify the business from the page.
+    """
+    # Use more signals: visible text + title + meta description + h1/h2 + url
+    title_tag = soup.find("title")
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    headings   = " ".join(t.get_text(" ", strip=True) for t in soup.find_all(["h1","h2","h3"]))
+    title_text = title_tag.get_text(" ", strip=True) if title_tag else ""
+    meta_text  = meta_desc.get("content", "") if meta_desc else ""
+
+    # Weight headings + title + meta more than body (multiply by 3)
+    rich_text  = (title_text + " " + meta_text + " " + headings).lower() * 3
+    body_text  = soup.get_text(" ", strip=True).lower()
+    full_text  = rich_text + " " + body_text + " " + url.lower()
+
     scores = {btype: 0 for btype in BUSINESS_TYPES}
     for btype, keywords in BUSINESS_TYPES.items():
         for kw in keywords:
-            if kw in text:
+            if kw in full_text:
                 scores[btype] += 1
-    best = max(scores, key=scores.get)
-    return best if scores[best] > 0 else "default"
+
+    best       = max(scores, key=scores.get)
+    best_score = scores[best]
+
+    # Require at least 3 keyword matches for confident detection
+    if best_score >= 3:
+        print(f"[Audit] Business type detected: {best} (confidence: {best_score})")
+        return best, True
+    else:
+        print(f"[Audit] Business type unclear (best={best}, score={best_score}) — flagging as issue")
+        return "default", False
+
 
 
 def get_impact(btype: str, issue_key: str) -> str:
@@ -621,8 +645,7 @@ def run_audit(url: str) -> dict:
         return {"error": fetch["error"], "url": url}
 
     soup = BeautifulSoup(fetch["html"], "lxml")
-    btype = detect_business_type(soup, url)
-    print(f"[Audit] Business type detected: {btype}")
+    btype, btype_confident = detect_business_type(soup, url)
 
     seo      = analyze_seo(soup, url)
     contact  = analyze_contact(soup, btype)
@@ -656,6 +679,16 @@ def run_audit(url: str) -> dict:
             all_issues.append({**issue, "category": cat})
     all_issues.sort(key=lambda x: sev_order.get(x["severity"], 9))
 
+    # If we couldn't identify the business type, flag it as a real SEO/branding issue
+    if not btype_confident:
+        all_issues.insert(0, {
+            "issue": "Website does not clearly communicate what this business does",
+            "severity": "critical",
+            "category": "Branding & Identity",
+            "fix": "Add a clear, specific headline on the homepage that states exactly what this business does, who it serves, and where it operates. Visitors (and Google) should understand the business within 3 seconds of landing.",
+            "business_impact": "If a visitor can't tell what you do within 3 seconds, they leave — permanently. Unclear positioning is one of the top reasons small business websites fail to convert traffic into customers. Google also ranks pages lower when it can't determine what topic or service a page is about."
+        })
+
     # Collect positives across all
     all_positives = []
     for result in [seo, contact, cta, trust, security, perf, mobile]:
@@ -681,7 +714,7 @@ def run_audit(url: str) -> dict:
         "all_issues": all_issues,
         "all_positives": all_positives,
         "psi": psi,
-        "customer_expectations": check_customer_expectations(soup, btype, html_text=fetch["html"]),
+        "customer_expectations": check_customer_expectations(soup, btype, html_text=fetch["html"]) if btype_confident else {},
     }
 
 
