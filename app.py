@@ -28,106 +28,109 @@ STYLES = """
   html, body, [class*="css"] {
     font-family: 'Space Grotesk', system-ui, sans-serif !important;
   }
-  .stApp { background-color: #0A0E1A !important; }
+  .stApp { background-color: #FFFFFF !important; color: #0F172A !important; }
+  
+  /* Make full width instead of centered */
   .block-container {
     padding: 2rem 2.5rem 4rem !important;
-    max-width: 1160px !important;
+    max-width: 100% !important; /* Full width */
   }
   #MainMenu, footer, header { visibility: hidden !important; }
   .stDeployButton { display: none !important; }
 
   ::-webkit-scrollbar { width: 4px; }
-  ::-webkit-scrollbar-track { background: #0A0E1A; }
-  ::-webkit-scrollbar-thumb { background: #1F2937; border-radius: 0; }
+  ::-webkit-scrollbar-track { background: #F1F5F9; }
+  ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 0; }
 
   /* ── Typography Tokens ── */
   .ryo-eyebrow {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 10px; font-weight: 600; color: #00D4AA;
+    font-size: 10px; font-weight: 700; color: #1D4ED8; /* Navy/Blue */
     letter-spacing: 0.15em; text-transform: uppercase; margin-bottom: 6px;
   }
   .ryo-display {
-    font-size: 32px; font-weight: 700; color: #F9FAFB;
+    font-size: 32px; font-weight: 700; color: #0F172A;
     line-height: 1.15; margin: 0; letter-spacing: -0.02em;
   }
-  .ryo-subtitle { font-size: 14px; color: #6B7280; font-weight: 400; margin-top: 6px; }
+  .ryo-subtitle { font-size: 14px; color: #475569; font-weight: 500; margin-top: 6px; }
   .ryo-label {
     font-family: 'JetBrains Mono', monospace; font-size: 10px;
-    font-weight: 500; color: #6B7280; text-transform: uppercase; letter-spacing: 0.1em;
+    font-weight: 600; color: #64748B; text-transform: uppercase; letter-spacing: 0.1em;
   }
 
   /* ── Header ── */
   .ryo-header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 0 0 24px 0; border-bottom: 1px solid #1F2937; margin-bottom: 32px;
+    padding: 0 0 24px 0; border-bottom: 2px solid #0F172A; margin-bottom: 32px;
   }
   .ryo-logo { display: flex; align-items: center; gap: 12px; }
   .ryo-logo-mark {
     width: 34px; height: 34px;
-    background: #00D4AA10; border: 1px solid #00D4AA30;
-    border-radius: 2px;
-    display: flex; align-items: center; justify-content: center; font-size: 16px;
+    background: #0F172A; color: #FFFFFF;
+    border-radius: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700;
   }
-  .ryo-logo-name { font-size: 16px; font-weight: 700; color: #F9FAFB; }
+  .ryo-logo-name { font-size: 16px; font-weight: 800; color: #0F172A; }
   .ryo-logo-tag {
-    font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #6B7280;
-    background: #111827; border: 1px solid #1F2937;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #0F172A;
+    background: #FFFFFF; border: 1px solid #0F172A; font-weight: 600;
     padding: 2px 8px; border-radius: 0; margin-left: 8px;
   }
   .ryo-version {
-    font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #374151;
-    padding: 4px 10px; border: 1px solid #1F2937; border-radius: 0;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #0F172A; font-weight: 600;
+    padding: 4px 10px; border: 1px solid #0F172A; border-radius: 0;
   }
 
   /* ── Bento Score Card ── */
   .ryo-score-card {
-    background: #111827; border: 1px solid #1F2937; border-radius: 2px;
+    background: #FFFFFF; border: 2px solid #0F172A; border-radius: 0;
     padding: 28px 24px; display: flex; flex-direction: column;
     align-items: center; justify-content: center; text-align: center;
     position: relative; overflow: hidden;
   }
   .ryo-score-card::before {
-    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 4px;
   }
-  .ryo-score-card.critical::before { background: #F43F5E; }
-  .ryo-score-card.warning::before  { background: #F59E0B; }
-  .ryo-score-card.good::before     { background: #10B981; }
+  .ryo-score-card.critical::before { background: #DC2626; }
+  .ryo-score-card.warning::before  { background: #D97706; }
+  .ryo-score-card.good::before     { background: #16A34A; }
+  
   .ryo-score-number {
     font-family: 'JetBrains Mono', monospace; font-size: 64px;
-    font-weight: 700; line-height: 1; margin-bottom: 6px;
+    font-weight: 800; line-height: 1; margin-bottom: 6px;
   }
   .ryo-score-domain {
-    font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #374151;
-    margin-top: 10px; padding: 3px 10px; background: #0A0E1A;
-    border: 1px solid #1F2937; border-radius: 0;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #0F172A; font-weight: 600;
+    margin-top: 10px; padding: 3px 10px; background: #F1F5F9;
+    border: 1px solid #0F172A; border-radius: 0;
   }
 
   /* ── Stat Chip ── */
   .ryo-stat {
-    background: #111827; border: 1px solid #1F2937; border-radius: 2px;
+    background: #FFFFFF; border: 2px solid #0F172A; border-radius: 0;
     padding: 20px 18px; display: flex; flex-direction: column; justify-content: space-between;
   }
   .ryo-stat-value {
     font-family: 'JetBrains Mono', monospace; font-size: 28px;
-    font-weight: 700; line-height: 1; margin-bottom: 8px;
+    font-weight: 800; line-height: 1; margin-bottom: 8px; color: #0F172A;
   }
 
   /* ── Tab Navigation ── */
   .stTabs [data-baseweb="tab-list"] {
     gap: 0 !important; background: transparent !important;
-    border-bottom: 1px solid #1F2937 !important;
+    border-bottom: 2px solid #E2E8F0 !important;
     padding-bottom: 0 !important; margin-bottom: 28px !important;
   }
   .stTabs [data-baseweb="tab"] {
-    font-family: 'Space Grotesk', sans-serif !important; font-size: 13px !important;
-    font-weight: 500 !important; color: #6B7280 !important;
+    font-family: 'Space Grotesk', sans-serif !important; font-size: 14px !important;
+    font-weight: 600 !important; color: #64748B !important;
     background: transparent !important; border: none !important;
-    border-radius: 0 !important; padding: 10px 20px !important;
-    border-bottom: 2px solid transparent !important; margin-bottom: -1px !important;
+    border-radius: 0 !important; padding: 10px 24px !important;
+    border-bottom: 3px solid transparent !important; margin-bottom: -2px !important;
   }
-  .stTabs [data-baseweb="tab"]:hover { color: #9CA3AF !important; }
+  .stTabs [data-baseweb="tab"]:hover { color: #0F172A !important; }
   .stTabs [aria-selected="true"] {
-    color: #00D4AA !important; border-bottom: 2px solid #00D4AA !important;
+    color: #1D4ED8 !important; border-bottom: 3px solid #1D4ED8 !important;
     background: transparent !important;
   }
   .stTabs [data-baseweb="tab-panel"] { padding: 0 !important; }
@@ -135,33 +138,34 @@ STYLES = """
 
   /* ── Bars ── */
   .ryo-bar-wrap {
-    background: #111827; border: 1px solid #1F2937;
-    border-radius: 0; padding: 14px 18px; margin-bottom: 6px;
+    background: #FFFFFF; border: 1px solid #CBD5E1;
+    border-radius: 0; padding: 14px 18px; margin-bottom: 8px;
   }
-  .ryo-bar-track { height: 3px; background: #1F2937; border-radius: 0; margin-top: 10px; }
+  .ryo-bar-track { height: 4px; background: #E2E8F0; border-radius: 0; margin-top: 10px; }
 
   /* ── Service ── */
   .ryo-service {
-    background: #111827; border: 1px solid #1F2937;
+    background: #FFFFFF; border: 1px solid #CBD5E1;
     border-radius: 0; padding: 20px; height: 100%;
   }
-  .ryo-service:hover { border-color: #374151; }
+  .ryo-service:hover { border-color: #0F172A; }
 
   /* ── Quick Win ── */
   .ryo-win {
-    background: rgba(16,185,129,0.04); border: 1px solid rgba(16,185,129,0.15);
-    border-left: 2px solid #10B981; border-radius: 0;
-    padding: 12px 16px; margin-bottom: 6px; font-size: 13px; color: #D1FAE5;
+    background: #F0FDF4; border: 1px solid #BBF7D0;
+    border-left: 4px solid #16A34A; border-radius: 0;
+    padding: 12px 16px; margin-bottom: 6px; font-size: 14px; color: #166534; font-weight: 500;
   }
 
   /* ── Missing / Met ── */
   .ryo-missing {
-    background: rgba(244,63,94,0.04); border: 1px solid rgba(244,63,94,0.15);
-    border-left: 2px solid #F43F5E; border-radius: 0;
+    background: #FEF2F2; border: 1px solid #FECACA;
+    border-left: 4px solid #DC2626; border-radius: 0;
     padding: 16px 18px; margin-bottom: 8px;
   }
   .ryo-met {
-    background: rgba(16,185,129,0.04); border: 1px solid rgba(16,185,129,0.12);
+    background: #F0FDF4; border: 1px solid #BBF7D0;
+    border-left: 4px solid #16A34A;
     border-radius: 0; padding: 12px 16px; margin-bottom: 6px;
     display: flex; align-items: center; gap: 12px;
   }
@@ -169,75 +173,75 @@ STYLES = """
   /* ── Pill ── */
   .ryo-pill {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 10px; background: rgba(0,212,170,0.06);
-    border: 1px solid rgba(0,212,170,0.2); border-radius: 0;
-    font-size: 12px; color: #00D4AA; font-weight: 500; margin: 3px 4px 3px 0;
+    padding: 4px 10px; background: #DBEAFE;
+    border: 1px solid #93C5FD; border-radius: 0;
+    font-size: 12px; color: #1D4ED8; font-weight: 600; margin: 3px 4px 3px 0;
   }
 
   /* ── Check Row ── */
   .ryo-check {
-    background: #111827; border: 1px solid #1F2937; border-radius: 0;
+    background: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 0;
     padding: 12px 16px; display: flex; align-items: center; gap: 12px;
-    margin-bottom: 6px; font-size: 13px; font-weight: 500;
+    margin-bottom: 6px; font-size: 14px; font-weight: 600; color: #0F172A;
   }
 
   /* ── Divider ── */
-  .ryo-divider { height: 1px; background: #1F2937; margin: 28px 0; }
+  .ryo-divider { height: 1px; background: #E2E8F0; margin: 28px 0; }
 
   /* ── Section ── */
   .ryo-section-title {
-    font-size: 15px; font-weight: 600; color: #E5E7EB;
+    font-size: 18px; font-weight: 700; color: #0F172A;
     margin-bottom: 16px; letter-spacing: -0.01em;
   }
-  .ryo-section-sub { font-size: 12px; color: #6B7280; margin-top: -10px; margin-bottom: 18px; }
+  .ryo-section-sub { font-size: 14px; color: #475569; margin-top: -10px; margin-bottom: 18px; font-weight: 500; }
 
   /* ── Impact ── */
   .ryo-issue-impact {
-    margin-top: 10px; background: #0A0E1A; border: 1px solid #1F2937;
-    border-left: 2px solid #F43F5E; border-radius: 0; padding: 8px 12px;
+    margin-top: 10px; background: #FEF2F2; border: 1px solid #FECACA;
+    border-left: 3px solid #DC2626; border-radius: 0; padding: 10px 14px;
   }
 
   /* ── Overrides ── */
   .stTextInput input {
-    background: #111827 !important; border: 1px solid #1F2937 !important;
-    border-radius: 2px !important; color: #F9FAFB !important;
-    font-family: 'Space Grotesk', sans-serif !important; font-size: 15px !important;
+    background: #FFFFFF !important; border: 2px solid #0F172A !important;
+    border-radius: 0 !important; color: #0F172A !important;
+    font-family: 'Space Grotesk', sans-serif !important; font-size: 16px !important; font-weight: 500 !important;
   }
   .stTextInput input:focus {
-    border-color: #00D4AA60 !important;
-    box-shadow: none !important;
+    border-color: #1D4ED8 !important;
+    box-shadow: 4px 4px 0px #1D4ED8 !important;
   }
   .stTextArea textarea {
-    background: #111827 !important; border: 1px solid #1F2937 !important;
-    border-radius: 0 !important; color: #9CA3AF !important;
-    font-family: 'JetBrains Mono', monospace !important; font-size: 12px !important;
+    background: #FFFFFF !important; border: 2px solid #0F172A !important;
+    border-radius: 0 !important; color: #0F172A !important;
+    font-family: 'JetBrains Mono', monospace !important; font-size: 13px !important;
   }
   .stTextArea textarea:focus {
-    border-color: #00D4AA60 !important; box-shadow: none !important;
+    border-color: #1D4ED8 !important; box-shadow: 4px 4px 0px #1D4ED8 !important;
   }
   .stButton > button {
-    font-family: 'Space Grotesk', sans-serif !important; font-weight: 600 !important;
-    font-size: 14px !important; background: #00D4AA !important;
-    color: #0A0E1A !important; border: none !important;
-    border-radius: 2px !important; padding: 10px 24px !important;
+    font-family: 'Space Grotesk', sans-serif !important; font-weight: 700 !important;
+    font-size: 15px !important; background: #0F172A !important;
+    color: #FFFFFF !important; border: 2px solid #0F172A !important;
+    border-radius: 0 !important; padding: 10px 24px !important; text-transform: uppercase;
   }
-  .stButton > button:hover { opacity: 0.85 !important; }
+  .stButton > button:hover { background: #1D4ED8 !important; border-color: #1D4ED8 !important; }
   .stDownloadButton > button {
-    font-family: 'Space Grotesk', sans-serif !important; font-weight: 600 !important;
-    background: transparent !important; color: #00D4AA !important;
-    border: 1px solid #00D4AA40 !important; border-radius: 0 !important;
+    font-family: 'Space Grotesk', sans-serif !important; font-weight: 700 !important;
+    background: #FFFFFF !important; color: #0F172A !important;
+    border: 2px solid #0F172A !important; border-radius: 0 !important; text-transform: uppercase;
   }
   .stDownloadButton > button:hover {
-    background: #00D4AA08 !important; border-color: #00D4AA80 !important;
+    background: #F1F5F9 !important; box-shadow: 4px 4px 0px #0F172A !important;
   }
-  .stProgress > div > div { background: #00D4AA !important; }
+  .stProgress > div > div { background: #0F172A !important; }
   .streamlit-expanderHeader {
-    background: #111827 !important; border: 1px solid #1F2937 !important;
+    background: #FFFFFF !important; border: 1px solid #CBD5E1 !important;
     border-radius: 0 !important; font-family: 'Space Grotesk', sans-serif !important;
-    font-size: 13px !important; font-weight: 600 !important; color: #E5E7EB !important;
+    font-size: 15px !important; font-weight: 700 !important; color: #0F172A !important;
   }
   .streamlit-expanderContent {
-    background: #111827 !important; border: 1px solid #1F2937 !important;
+    background: #FFFFFF !important; border: 1px solid #CBD5E1 !important;
     border-top: none !important; border-radius: 0 !important;
   }
 </style>
@@ -249,7 +253,7 @@ st.markdown("""
 <div class="ryo-header">
   <div class="ryo-logo">
     <div class="ryo-logo-mark">◈</div>
-    <div class="ryo-logo-name">Ryotech<span style="color:#00D4AA">.</span></div>
+    <div class="ryo-logo-name">Ryotech<span style="color:#1D4ED8">.</span></div>
     <span class="ryo-logo-tag">AI Website Auditor</span>
   </div>
   <div class="ryo-version">v3.0</div>
@@ -364,15 +368,15 @@ medium_n   = len([i for i in issues if i["severity"] == "medium"])
 
 # ── SUCCESS BAR ──
 st.markdown(f"""
-<div style="background:#00D4AA08;border:1px solid #00D4AA25;
+<div style="background:#DBEAFE;border:1px solid #93C5FD;
   border-radius:0;padding:10px 16px;margin-bottom:28px;
   display:flex;align-items:center;gap:12px">
-  <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#00D4AA">
+  <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#1D4ED8">
     ✓ AUDIT COMPLETE
   </span>
-  <span style="font-size:13px;color:#9CA3AF;font-weight:500">{audit['domain']}</span>
+  <span style="font-size:13px;color:#475569;font-weight:500">{audit['domain']}</span>
   <span style="font-family:'JetBrains Mono',monospace;font-size:10px;
-    background:#111827;border:1px solid #1F2937;color:#6B7280;
+    background:#FFFFFF;border:1px solid #CBD5E1;color:#64748B;
     padding:2px 8px;border-radius:0">{btype_label.upper()}</span>
 </div>
 """, unsafe_allow_html=True)
@@ -425,9 +429,9 @@ with tab_overview:
 
     st.markdown('<div class="ryo-section-title">AI Analysis</div>', unsafe_allow_html=True)
     st.markdown(f"""
-    <div style="background:#111827;border:1px solid #1F2937;border-left:2px solid #00D4AA;
+    <div style="background:#FFFFFF;border:1px solid #CBD5E1;border-left:2px solid #1D4ED8;
       border-radius:0;padding:20px 22px;
-      font-size:14px;color:#9CA3AF;line-height:1.8">
+      font-size:14px;color:#475569;line-height:1.8">
       {audit.get('ai_summary','').replace(chr(10),'<br>')}
     </div>
     """, unsafe_allow_html=True)
@@ -446,7 +450,7 @@ with tab_overview:
         st.markdown(f"""
         <div class="ryo-bar-wrap">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:13px;font-weight:500;color:#E5E7EB">{lbl}</span>
+            <span style="font-size:13px;font-weight:500;color:#1E293B">{lbl}</span>
             <span style="font-family:'JetBrains Mono',monospace;font-size:14px;
               font-weight:700;color:{c}">{s}</span>
           </div>
@@ -490,7 +494,7 @@ with tab_issues:
 
     for issue in issues[:14]:
         sev = issue["severity"]
-        color = sev_colors.get(sev, "#9CA3AF")
+        color = sev_colors.get(sev, "#475569")
         badge = sev_label.get(sev, "INFO")
         impact = issue.get("business_impact", "")
 
@@ -504,7 +508,7 @@ with tab_issues:
                     <div class="ryo-issue-impact">
                       <span style="font-family:'JetBrains Mono',monospace;font-size:9px;
                         font-weight:600;color:#F43F5E;letter-spacing:0.1em">REVENUE IMPACT</span><br>
-                      <span style="font-size:12px;color:#9CA3AF">{impact}</span>
+                      <span style="font-size:12px;color:#475569">{impact}</span>
                     </div>
                     """, unsafe_allow_html=True)
             with col_b:
@@ -538,14 +542,14 @@ with tab_contact:
         col = col_c1 if i % 2 == 0 else col_c2
         icon   = "✓" if ok else "✗"
         color  = "#10B981" if ok else "#F43F5E"
-        bg     = "rgba(16,185,129,0.04)" if ok else "rgba(244,63,94,0.04)"
-        border = "rgba(16,185,129,0.2)" if ok else "rgba(244,63,94,0.15)"
+        bg     = "#F0FDF4" if ok else "#FEF2F2"
+        border = "#BBF7D0" if ok else "#FECACA"
         with col:
             st.markdown(f"""
             <div class="ryo-check" style="background:{bg};border-color:{border}">
               <span style="font-family:'JetBrains Mono',monospace;font-weight:700;
                 font-size:13px;color:{color}">{icon}</span>
-              <span style="color:#E5E7EB">{label}</span>
+              <span style="color:#1E293B">{label}</span>
             </div>
             """, unsafe_allow_html=True)
 
@@ -564,12 +568,12 @@ with tab_intel:
 
         if headline:
             st.markdown(f"""
-            <div style="background:#111827;border:1px solid #1F2937;border-left:2px solid #F43F5E;
+            <div style="background:#FFFFFF;border:1px solid #CBD5E1;border-left:2px solid #F43F5E;
               border-radius:0;padding:16px 20px;margin-bottom:24px">
               <div style="font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:600;
                 color:#F43F5E;letter-spacing:0.15em;margin-bottom:8px">RESEARCH INSIGHT</div>
-              <div style="font-size:15px;font-weight:600;color:#F9FAFB;line-height:1.5">{headline}</div>
-              <div style="font-size:12px;color:#6B7280;margin-top:6px">
+              <div style="font-size:15px;font-weight:600;color:#0F172A;line-height:1.5">{headline}</div>
+              <div style="font-size:12px;color:#64748B;margin-top:6px">
                 Checked against what {cex_label} customers specifically look for.
               </div>
             </div>
@@ -588,11 +592,11 @@ with tab_intel:
                 <div class="ryo-missing">
                   <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
                     <span style="font-family:'JetBrains Mono',monospace;font-size:9px;
-                      font-weight:700;color:#F43F5E;background:rgba(244,63,94,0.12);
+                      font-weight:700;color:#F43F5E;background:#FECACA;
                       padding:2px 8px;border-radius:0;letter-spacing:0.08em">MISSING</span>
-                    <span style="font-size:14px;font-weight:600;color:#F9FAFB">{item['name']}</span>
+                    <span style="font-size:14px;font-weight:600;color:#0F172A">{item['name']}</span>
                   </div>
-                  <div style="font-size:13px;color:#9CA3AF;margin-bottom:10px;line-height:1.6">
+                  <div style="font-size:13px;color:#475569;margin-bottom:10px;line-height:1.6">
                     {item['why']}
                   </div>
                   <div style="font-family:'JetBrains Mono',monospace;font-size:11px;
@@ -612,10 +616,10 @@ with tab_intel:
                 <div class="ryo-met">
                   <span style="font-family:'JetBrains Mono',monospace;color:#10B981;font-weight:700">✓</span>
                   <div>
-                    <div style="font-size:13px;font-weight:600;color:#E5E7EB;margin-bottom:2px">
+                    <div style="font-size:13px;font-weight:600;color:#1E293B;margin-bottom:2px">
                       {item['name']}
                     </div>
-                    <div style="font-size:12px;color:#6B7280">{item['why']}</div>
+                    <div style="font-size:12px;color:#64748B">{item['why']}</div>
                   </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -623,7 +627,7 @@ with tab_intel:
         st.markdown("""
         <div style="text-align:center;padding:60px 20px;color:#374151">
           <div style="font-family:'JetBrains Mono',monospace;font-size:28px;margin-bottom:12px">◌</div>
-          <div style="font-size:13px;color:#6B7280">No customer intelligence data for this business type.</div>
+          <div style="font-size:13px;color:#64748B">No customer intelligence data for this business type.</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -654,12 +658,12 @@ with tab_services:
                 <div class="ryo-service" style="border-top:2px solid {color}">
                   <div style="font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:600;
                     color:{color};letter-spacing:0.1em;margin-bottom:12px">{tag}</div>
-                  <div style="font-size:15px;font-weight:700;color:#F9FAFB;
+                  <div style="font-size:15px;font-weight:700;color:#0F172A;
                     margin-bottom:8px;letter-spacing:-0.01em">{svc['service']}</div>
-                  <div style="font-size:12px;color:#6B7280;margin-bottom:14px;line-height:1.6">
+                  <div style="font-size:12px;color:#64748B;margin-bottom:14px;line-height:1.6">
                     {svc.get('description','')}
                   </div>
-                  <div style="font-size:12px;color:#00D4AA;font-style:italic">
+                  <div style="font-size:12px;color:#1D4ED8;font-style:italic">
                     → {svc.get('outcome','')}
                   </div>
                 </div>
@@ -675,25 +679,25 @@ with tab_services:
                 col_sn, col_out, col_tg = st.columns([3, 3, 1])
                 with col_sn:
                     st.markdown(f"""
-                    <div style="background:#111827;border:1px solid #1F2937;
+                    <div style="background:#FFFFFF;border:1px solid #CBD5E1;
                       border-radius:0;padding:12px 16px">
-                      <div style="font-size:13px;font-weight:600;color:#E5E7EB;margin-bottom:3px">
+                      <div style="font-size:13px;font-weight:600;color:#1E293B;margin-bottom:3px">
                         {svc['service']}
                       </div>
-                      <div style="font-size:11px;color:#6B7280">
+                      <div style="font-size:11px;color:#64748B">
                         {svc.get('triggered_by','')[:60]}{'…' if len(svc.get('triggered_by',''))>60 else ''}
                       </div>
                     </div>
                     """, unsafe_allow_html=True)
                 with col_out:
                     st.markdown(f"""
-                    <div style="background:#111827;border:1px solid #1F2937;
+                    <div style="background:#FFFFFF;border:1px solid #CBD5E1;
                       border-radius:0;padding:12px 16px;
-                      font-size:12px;color:#00D4AA;font-style:italic">→ {svc.get('outcome','')}</div>
+                      font-size:12px;color:#1D4ED8;font-style:italic">→ {svc.get('outcome','')}</div>
                     """, unsafe_allow_html=True)
                 with col_tg:
                     st.markdown(f"""
-                    <div style="background:#111827;border:1px solid #1F2937;
+                    <div style="background:#FFFFFF;border:1px solid #CBD5E1;
                       border-radius:0;padding:12px 16px;text-align:center">
                       <span style="font-family:'JetBrains Mono',monospace;font-size:9px;
                         font-weight:600;color:{color};letter-spacing:0.08em">{tag}</span>
@@ -707,11 +711,11 @@ with tab_services:
 with tab_email:
     st.markdown('<div class="ryo-section-title">Personalised Outreach Email</div>', unsafe_allow_html=True)
     st.markdown(f"""
-    <div style="background:#00D4AA06;border:1px solid #00D4AA20;
+    <div style="background:#F1F5F9;border:1px solid #CBD5E1;
       border-radius:0;padding:10px 16px;margin-bottom:20px;
-      font-size:12px;color:#6B7280">
+      font-size:12px;color:#64748B">
       Written specifically for
-      <span style="color:#00D4AA;font-weight:600">{audit['business_name']}</span>
+      <span style="color:#1D4ED8;font-weight:600">{audit['business_name']}</span>
       ({btype_label}) — copy and send directly.
     </div>
     """, unsafe_allow_html=True)
@@ -734,11 +738,11 @@ with tab_email:
         )
     with col_hint:
         st.markdown("""
-        <div style="font-size:12px;color:#6B7280;padding-top:10px">
+        <div style="font-size:12px;color:#64748B;padding-top:10px">
           Open in Chrome →
-          <span style="font-family:'JetBrains Mono',monospace;background:#111827;
-            border:1px solid #1F2937;padding:1px 6px;border-radius:0;
-            font-size:11px;color:#9CA3AF">Cmd+P</span>
+          <span style="font-family:'JetBrains Mono',monospace;background:#FFFFFF;
+            border:1px solid #CBD5E1;padding:1px 6px;border-radius:0;
+            font-size:11px;color:#475569">Cmd+P</span>
           → Save as PDF
         </div>
         """, unsafe_allow_html=True)
