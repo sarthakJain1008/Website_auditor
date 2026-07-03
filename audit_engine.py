@@ -156,13 +156,32 @@ def fetch_page(url: str) -> dict:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     start = time.time()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
     try:
-        r = requests.get(url, timeout=15, headers={
-            "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-        }, allow_redirects=True)
+        r = requests.get(url, timeout=15, headers=headers, allow_redirects=True)
         elapsed = round(time.time() - start, 2)
+        html = r.text
+
+        # Also fetch /contact and /about pages for more signal (phone, email, address often only there)
+        base = r.url.rstrip("/")
+        extra_html = ""
+        for path in ["/contact", "/contact-us", "/about", "/about-us"]:
+            try:
+                sub = requests.get(base + path, timeout=8, headers=headers, allow_redirects=True)
+                if sub.status_code == 200 and len(sub.text) > 500:
+                    extra_html += " " + sub.text
+            except Exception:
+                pass
+
         return {
-            "html": r.text, "status_code": r.status_code,
+            "html": html,
+            "extra_html": extra_html,   # contact/about pages
+            "full_html": html + extra_html,  # all pages combined
+            "status_code": r.status_code,
             "response_time": elapsed, "final_url": r.url,
             "is_https": r.url.startswith("https://"),
             "headers": dict(r.headers),
@@ -170,9 +189,9 @@ def fetch_page(url: str) -> dict:
             "error": None
         }
     except Exception as e:
-        return {"html": "", "error": str(e), "is_https": False,
-                "response_time": 0, "final_url": url, "headers": {},
-                "page_size_kb": 0, "status_code": 0}
+        return {"html": "", "extra_html": "", "full_html": "", "error": str(e),
+                "is_https": False, "response_time": 0, "final_url": url,
+                "headers": {}, "page_size_kb": 0, "status_code": 0}
 
 
 # ─── ADDITIVE SCORING MODEL ─────────────────────────────────────────────────
@@ -258,17 +277,51 @@ def analyze_seo(soup: BeautifulSoup, url: str) -> dict:
             "title": title, "meta_description": desc, "h1_count": len(h1s)}
 
 
-def analyze_contact(soup: BeautifulSoup, btype: str) -> dict:
+def analyze_contact(soup: BeautifulSoup, btype: str, raw_html: str = "") -> dict:
+    """Detect contact info from visible text, href attributes, AND raw HTML (catches JS-rendered content)."""
     issues, positives = [], []
-    score = 0  # Additive
+    score = 0
 
-    html_text = soup.get_text(" ", strip=True)
+    # Strip noise from soup for clean text extraction
+    clean_soup = BeautifulSoup(str(soup), 'lxml')
+    for tag in clean_soup(['script', 'style', 'svg', 'path', 'noscript']):
+        tag.decompose()
+    html_text = clean_soup.get_text(" ", strip=True)
 
-    # Phone (max 30 pts — most critical for local biz)
+    # Raw HTML string scan catches JS-rendered & obfuscated content
+    raw = raw_html if raw_html else str(soup)
+
     phone_pattern = re.compile(r'(\+?[\d][\d\s\(\)\-\.]{7,}[\d])')
-    phones = [p for p in phone_pattern.findall(html_text) if len(re.sub(r'\D', '', p)) >= 7]
+    email_pattern = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
+
+    # ── tel: links — checks both soup and raw HTML ───────────────────────────────
+    tel_links = soup.find_all("a", href=re.compile(r"tel:", re.I))
+    # Also find tel: in raw HTML string (catches dynamically injected links)
+    tel_in_raw = re.findall(r'href=["\']tel:([+\d\s\-\.\(\)]{6,})["\']', raw, re.I)
+    tel_hrefs = list(set(
+        [a.get('href', '').replace('tel:', '').strip() for a in tel_links] + tel_in_raw
+    ))
+
+    # ── mailto: links ────────────────────────────────────────────────────────────
+    mailto_links = soup.find_all("a", href=re.compile(r"mailto:", re.I))
+    # Also find mailto: in raw HTML
+    mailto_in_raw = re.findall(r'href=["\']mailto:([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)', raw, re.I)
+    mailto_hrefs = list(set(
+        [a.get('href', '').replace('mailto:', '').split('?')[0].strip() for a in mailto_links]
+        + mailto_in_raw
+    ))
+
+    # ── Phone: visible text + tel: links + raw HTML scan ────────────────────────
+    phones_in_text = [p for p in phone_pattern.findall(html_text) if len(re.sub(r'\D', '', p)) >= 7]
+    # Scan raw HTML for any phone patterns in data attributes, JSON, scripts
+    phones_in_raw  = [p for p in phone_pattern.findall(raw) if len(re.sub(r'\D', '', p)) >= 7
+                      and len(re.sub(r'\D', '', p)) <= 15]  # max 15 digits to avoid version numbers
+    phones = list(set(phones_in_text + tel_hrefs + phones_in_raw))
+    # Filter: remove strings that look like dates/versions (e.g. 2024-01-01)
+    phones = [p for p in phones if not re.match(r'^20\d\d', p.strip())]
+
     if phones:
-        score += 30; positives.append("Phone number visible")
+        score += 30; positives.append("Phone number found")
     else:
         issues.append({"severity": "critical",
                        "issue": "No phone number found on the page",
@@ -276,9 +329,8 @@ def analyze_contact(soup: BeautifulSoup, btype: str) -> dict:
                        "impact_key": "no_phone",
                        "business_impact": get_impact(btype, "no_phone")})
 
-    # Clickable tel: link (max 10 pts)
-    tel_links = soup.find_all("a", href=re.compile(r"^tel:"))
-    if tel_links:
+    # Clickable tel: link
+    if tel_links or tel_in_raw:
         score += 10; positives.append("Phone is clickable (tel: link)")
     elif phones:
         issues.append({"severity": "medium",
@@ -287,11 +339,17 @@ def analyze_contact(soup: BeautifulSoup, btype: str) -> dict:
                        "impact_key": "no_tel_link",
                        "business_impact": "Mobile users (60%+ of your traffic) can't tap your number to call. They have to manually type it — most won't bother."})
 
-    # Email (max 15 pts)
-    email_pattern = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
-    emails = [e for e in email_pattern.findall(html_text) if not e.endswith((".png", ".jpg", ".gif", ".svg"))]
+    # ── Email: visible text + mailto: links + raw HTML scan ─────────────────────
+    emails_in_text = [e for e in email_pattern.findall(html_text)
+                      if not e.endswith((".png", ".jpg", ".gif", ".svg", ".css", ".js"))]
+    emails_in_raw  = [e for e in email_pattern.findall(raw)
+                      if not e.endswith((".png", ".jpg", ".gif", ".svg", ".css", ".js", ".woff", ".ttf"))]
+    emails = list(set(emails_in_text + mailto_hrefs + emails_in_raw))
+    # Remove obvious non-contact emails (CDN domains, w3.org etc)
+    emails = [e for e in emails if not any(d in e for d in ['w3.org', 'schema.org', 'example.com', 'sentry.io', 'amazonaws'])]
+
     if emails:
-        score += 15; positives.append("Email address visible")
+        score += 15; positives.append("Email address found")
     else:
         issues.append({"severity": "medium",
                        "issue": "No email address visible on the site",
@@ -299,12 +357,17 @@ def analyze_contact(soup: BeautifulSoup, btype: str) -> dict:
                        "impact_key": "no_email",
                        "business_impact": get_impact(btype, "no_email")})
 
-    # Contact form (max 25 pts)
+    # ── Contact form: soup forms + raw HTML scan for embedded forms ──────────────
     forms = soup.find_all("form")
-    has_form = any(
-        any(kw in str(f).lower() for kw in ["contact", "name", "message", "email", "enquir", "inquiry", "quote", "book", "appointment", "input"])
-        for f in forms
-    )
+    form_kws = ["contact", "name", "message", "email", "enquir", "inquiry", "quote",
+                "book", "appointment", "input", "textarea", "submit"]
+    has_form = any(any(kw in str(f).lower() for kw in form_kws) for f in forms)
+    # Also check raw HTML for embedded form tools
+    form_platforms = ["typeform", "jotform", "wufoo", "formstack", "gravity", "wpforms",
+                      "contactform", "ninja-form", "cf7", "hubspot", "mailchimp", "klaviyo"]
+    if not has_form:
+        has_form = any(kw in raw.lower() for kw in form_platforms)
+
     if has_form:
         score += 25; positives.append("Contact / enquiry form present")
     else:
@@ -314,9 +377,20 @@ def analyze_contact(soup: BeautifulSoup, btype: str) -> dict:
                        "impact_key": "no_contact_form",
                        "business_impact": get_impact(btype, "no_contact_form")})
 
-    # Address (max 10 pts)
-    address_keywords = ["street", "st ", "ave", "avenue", "road", "rd,", "blvd", "lane", "suite", " ny ", " ca ", " tx ", " fl ", " wa ", "nsw", "vic", "qld", "ontario", "london", "manchester", "bronx", "brooklyn", "queens"]
-    has_address = any(kw in html_text.lower() for kw in address_keywords)
+    # ── Address: text + raw HTML + schema.org JSON-LD ────────────────────────────
+    address_kws = ["street", " st,", " ave,", "avenue", " road", " rd,", "blvd", " lane",
+                   "suite", "level ", "floor ", "unit ", "shop ",
+                   " nsw ", " vic ", " qld ", " wa ", " sa ", " nt ",
+                   "new south wales", "victoria", "queensland", "ontario", "alberta",
+                   " ny ", " ca ", " tx ", " fl ", "london", "manchester", "sydney",
+                   "melbourne", "brisbane", "perth", "toronto", "new york"]
+    has_address = any(kw in html_text.lower() for kw in address_kws)
+    if not has_address:
+        # Check raw HTML and JSON-LD schema
+        has_address = bool(re.search(r'"streetAddress"', raw, re.I)) or \
+                      bool(re.search(r'"addressLocality"', raw, re.I)) or \
+                      any(kw in raw.lower() for kw in address_kws)
+
     if has_address:
         score += 10; positives.append("Address visible")
     else:
@@ -326,13 +400,15 @@ def analyze_contact(soup: BeautifulSoup, btype: str) -> dict:
                        "impact_key": "no_address",
                        "business_impact": "Google's local ranking algorithm uses NAP (Name, Address, Phone) consistency. Missing address = lower map pack ranking."})
 
-    # Google Maps (max 10 pts)
+    # ── Google Maps embed ────────────────────────────────────────────────────────
     has_map = bool(soup.find("iframe", src=re.compile(r"maps\.google|google\.com/maps")))
+    if not has_map:
+        has_map = bool(re.search(r'maps\.google|google\.com/maps|maps\.app\.goo', raw, re.I))
     if has_map:
-        score += 10; positives.append("Google Maps embedded")
+        score += 10; positives.append("Google Maps embedded or linked")
     else:
         issues.append({"severity": "low",
-                       "issue": "No Google Maps embed",
+                       "issue": "No Google Maps embed or link",
                        "fix": "Embed a Google Map showing your location. It reinforces you're a real, established local business.",
                        "impact_key": "no_map",
                        "business_impact": "A map embed signals legitimacy and helps customers find you. Sites with maps have 25% higher trust scores in user studies."})
@@ -340,7 +416,7 @@ def analyze_contact(soup: BeautifulSoup, btype: str) -> dict:
     return {"score": min(score, 100), "issues": issues, "positives": positives,
             "details": {"phone_found": bool(phones), "email_found": bool(emails),
                         "contact_form": has_form, "address_found": has_address,
-                        "google_maps": has_map, "tel_link": bool(tel_links)}}
+                        "google_maps": has_map, "tel_link": bool(tel_links or tel_in_raw)}}
 
 
 def analyze_cta(soup: BeautifulSoup, btype: str) -> dict:
@@ -381,10 +457,12 @@ def analyze_cta(soup: BeautifulSoup, btype: str) -> dict:
     if tel_links:
         score += 20; positives.append("Clickable phone link present")
 
-    # Booking / online scheduling (max 30 pts)
+    # Booking / online scheduling (max 30 pts) — check raw HTML too
     booking_keywords = ["book online", "schedule online", "book appointment", "online booking",
-                        "calendly", "acuity", "booker", "mindbody", "fresha", "bookwell",
-                        "reserve", "reservation", "pick a time", "choose a time"]
+                        "calendly", "acuityscheduling", "acuity", "booker", "mindbody", "fresha",
+                        "bookwell", "timely", "square appointments", "setmore", "simplybook",
+                        "reserve", "reservation", "pick a time", "choose a time",
+                        "book a session", "book a class", "book a table", "book a consultation"]
     html_str = str(soup).lower()
     has_booking = any(kw in html_str for kw in booking_keywords)
     if has_booking:
@@ -397,17 +475,23 @@ def analyze_cta(soup: BeautifulSoup, btype: str) -> dict:
     return {"score": min(score, 100), "issues": issues, "positives": positives, "ctas_found": list(set(cta_found))[:5]}
 
 
-def analyze_trust(soup: BeautifulSoup, btype: str) -> dict:
+def analyze_trust(soup: BeautifulSoup, btype: str, raw_html: str = "") -> dict:
+    """Check trust signals in visible text AND raw HTML (catches review widgets, social links in scripts)."""
     issues, positives = [], []
     score = 0
     html_text = soup.get_text(" ", strip=True).lower()
-    html_str = str(soup).lower()
+    raw = (raw_html if raw_html else str(soup)).lower()
 
-    # Testimonials / reviews section (max 30 pts)
+    # Testimonials / reviews (max 30 pts) — check text AND raw HTML (widgets load via JS)
     review_keywords = ["testimonial", "review", "what our", "what clients", "what customers",
                        "5 star", "five star", "our clients say", "they say", "feedback",
-                       "verified review", "happy customer", "satisfied", "recommend"]
+                       "verified review", "happy customer", "satisfied", "recommend",
+                       "rated", "star rating", "trustpilot", "google review", "yelp"]
+    review_platforms = ["trustpilot", "elfsight", "reviews.io", "grade.us", "birdeye",
+                        "podium", "widewail", "reviewsig", "stamped", "yotpo"]
     has_reviews = any(kw in html_text for kw in review_keywords)
+    if not has_reviews:
+        has_reviews = any(kw in raw for kw in review_platforms + review_keywords)
     if has_reviews:
         score += 30; positives.append("Testimonials or reviews section found")
     else:
@@ -415,8 +499,8 @@ def analyze_trust(soup: BeautifulSoup, btype: str) -> dict:
                        "fix": "Add a dedicated testimonials section with 3–5 real customer quotes, names, and if possible, photos.",
                        "impact_key": "no_reviews", "business_impact": get_impact(btype, "no_reviews")})
 
-    # Google review link / embed (max 25 pts)
-    has_google_review = bool(re.search(r'google\.com/maps|maps\.google|g\.page|google.*review', html_str))
+    # Google Reviews link / embed (max 25 pts)
+    has_google_review = bool(re.search(r'google\.com/maps|maps\.google|g\.page|google.*review|place_id|g\.co\/maps', raw))
     if has_google_review:
         score += 25; positives.append("Google Reviews reference found")
     else:
@@ -426,9 +510,13 @@ def analyze_trust(soup: BeautifulSoup, btype: str) -> dict:
 
     # Trust badges / credentials (max 20 pts)
     badge_keywords = ["certified", "accredited", "member of", "award", "award-winning", "licensed",
-                      "insured", "guarantee", "money back", "registered", "qualified", "years of experience",
-                      "years experience", "abf", "hia", "master builder", "jcpa"]
+                      "insured", "guarantee", "money back", "registered", "qualified",
+                      "years of experience", "years experience", "years in business",
+                      "abf", "hia", "master builder", "jcpa", "police checked", "background check",
+                      "satisfaction guaranteed", "trusted", "verified", "bbb", "iso "]
     has_badges = any(kw in html_text for kw in badge_keywords)
+    if not has_badges:
+        has_badges = any(kw in raw for kw in badge_keywords)
     if has_badges:
         score += 20; positives.append("Trust badges or credentials present")
     else:
@@ -436,9 +524,9 @@ def analyze_trust(soup: BeautifulSoup, btype: str) -> dict:
                        "fix": "Display any professional licences, industry memberships, awards, or satisfaction guarantees. Even '10 Years in Business' builds trust.",
                        "impact_key": "no_trust_badges", "business_impact": "Without credentials, customers have no way to verify your legitimacy. First-time visitors need reassurance before spending money."})
 
-    # Social media presence (max 15 pts)
-    social_pattern = re.compile(r'facebook\.com|instagram\.com|twitter\.com|linkedin\.com|youtube\.com|tiktok\.com')
-    has_social = bool(social_pattern.search(html_str))
+    # Social media presence (max 15 pts) — check raw HTML so icon-only links are caught
+    social_pattern = re.compile(r'facebook\.com|instagram\.com|twitter\.com|x\.com|linkedin\.com|youtube\.com|tiktok\.com|pinterest\.com')
+    has_social = bool(social_pattern.search(raw))
     if has_social:
         score += 15; positives.append("Social media links present")
     else:
@@ -447,8 +535,12 @@ def analyze_trust(soup: BeautifulSoup, btype: str) -> dict:
                        "impact_key": "no_social", "business_impact": get_impact(btype, "no_social")})
 
     # About / team page (max 10 pts)
-    about_keywords = ["about us", "our team", "meet the team", "our story", "who we are", "about me", "founder", "owner"]
+    about_keywords = ["about us", "our team", "meet the team", "our story", "who we are",
+                      "about me", "founder", "owner", "our mission", "our values",
+                      "about the", "meet us", "our history"]
     has_about = any(kw in html_text for kw in about_keywords)
+    if not has_about:
+        has_about = any(kw in raw for kw in about_keywords)
     if has_about:
         score += 10; positives.append("About/team information present")
     else:
@@ -644,13 +736,14 @@ def run_audit(url: str) -> dict:
     if fetch.get("error"):
         return {"error": fetch["error"], "url": url}
 
+    full_html = fetch.get("full_html", fetch["html"])  # homepage + contact/about pages
     soup = BeautifulSoup(fetch["html"], "lxml")
     btype, btype_confident = detect_business_type(soup, url)
 
     seo      = analyze_seo(soup, url)
-    contact  = analyze_contact(soup, btype)
+    contact  = analyze_contact(soup, btype, raw_html=full_html)   # pass raw html
     cta      = analyze_cta(soup, btype)
-    trust    = analyze_trust(soup, btype)
+    trust    = analyze_trust(soup, btype, raw_html=full_html)     # pass raw html
     security = analyze_security(fetch, soup)
     perf     = analyze_performance(fetch, soup)
     mobile   = analyze_mobile(soup, fetch)
