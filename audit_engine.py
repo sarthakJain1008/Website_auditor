@@ -35,79 +35,6 @@ BUSINESS_TYPES = {
     "retail": ["shop", "store", "buy", "purchase", "product", "collection", "fashion", "clothing", "shoes", "accessories", "jewellery", "jewelry", "gifts"],
 }
 
-BUSINESS_IMPACT = {
-    "gym": {
-        "no_phone": "Potential members who want to ask about class times or pricing will call a competitor instead — gyms live and die by the phone.",
-        "no_email": "Parents enrolling children in classes often prefer email first. No email = lost family sign-ups.",
-        "no_contact_form": "Your trial offer is on the page but there's no way to claim it online. You're forcing people to call when many won't.",
-        "no_ssl": "When someone enters their name and phone for a 'Free Trial', a browser security warning kills that conversion instantly.",
-        "slow_load": "63% of your potential members are searching on mobile. A slow site means they've already called the gym down the road before your page loads.",
-        "no_reviews": "Before joining a gym, people read every review. No visible reviews = no social proof = they choose a gym they've heard about.",
-        "no_cta": "You have a trial offer but no obvious button to claim it. That's leaving money on the table every single day.",
-        "no_google_reviews": "Local gym searches on Google show star ratings. Without reviews showing on your site, you look less established than you are.",
-        "no_booking": "Gyms with online trial booking convert 3x more leads than those requiring a call. Every day without it is lost members.",
-        "no_social": "Instagram is where people discover gyms. No social links = missing your biggest free marketing channel.",
-    },
-    "restaurant": {
-        "no_phone": "Customers wanting to make a reservation or ask about specials will call whoever is first — that's not you.",
-        "no_email": "Event bookings, large groups, and corporate catering all start with an email. You're missing this revenue stream.",
-        "no_contact_form": "No online reservation system means you're losing bookings every night to competitors with OpenTable or a simple form.",
-        "no_ssl": "If you take online orders or reservations, a 'Not Secure' warning stops customers mid-checkout.",
-        "slow_load": "Hungry people search fast and decide fast. A 3+ second load time means they're ordering from a competitor before your menu appears.",
-        "no_reviews": "92% of diners read online reviews before choosing a restaurant. No testimonials on your site weakens trust.",
-        "no_cta": "No 'Book a Table' or 'Order Online' button above the fold means visitors leave without acting.",
-        "no_social": "Food photos on Instagram drive foot traffic. No social links = invisible to food-discovery audiences.",
-    },
-    "plumber": {
-        "no_phone": "Plumbing emergencies happen at 2am. If your phone number isn't the first thing visible, customers call someone else — permanently.",
-        "no_email": "Commercial clients and property managers send quote requests by email. No email address = you're invisible to this high-value segment.",
-        "no_contact_form": "A 24/7 quote request form captures leads while you sleep. Without it, you only get enquiries during business hours.",
-        "no_ssl": "Customers entering their address and contact details for a job quote will abandon if they see 'Not Secure'.",
-        "slow_load": "Emergency plumbing is time-critical. If your page takes 3+ seconds, the customer has already called your competitor.",
-        "no_reviews": "Tradies live by word-of-mouth. Without reviews on your site, new customers have no proof you're reliable.",
-        "no_cta": "No clear 'Get a Free Quote' button means you're getting traffic but no enquiries. Your site is a digital billboard, not a lead machine.",
-    },
-    "dentist": {
-        "no_phone": "Patients in pain call immediately. If your number isn't prominent, they call the first dentist they find — losing you an emergency appointment worth $300+.",
-        "no_email": "New patient registration and appointment requests via email are standard. Missing this means losing patients to practices with online booking.",
-        "no_contact_form": "Without an appointment request form, you're forcing patients to call during clinic hours — you lose everyone who browses after-hours.",
-        "no_ssl": "Patients entering health information, insurance details, or personal data on a non-HTTPS site face a browser warning. This destroys trust for a health provider.",
-        "slow_load": "Patients comparing dentists will click back immediately if your site is slow. Dental anxiety is real — a frustrating website reinforces it.",
-        "no_reviews": "For dentists, trust is everything. No reviews = patients choose the practice with 150 five-star reviews over yours.",
-        "no_cta": "No 'Book Appointment' button means your marketing spend is bringing visitors who leave without booking. Your cost-per-acquisition is needlessly high.",
-    },
-    "salon": {
-        "no_phone": "Clients wanting to book a colour appointment will text or call whoever responds fastest — and that's not you without a visible number.",
-        "no_email": "Bridal parties and group bookings start with an email. No email address = missing your highest-revenue bookings.",
-        "no_contact_form": "No online booking = clients go to Bookwell, Fresha, or StyleSeat and book your competitor instead.",
-        "no_ssl": "When clients enter payment details for deposits, a 'Not Secure' warning makes them close the tab immediately.",
-        "slow_load": "Salon discovery happens on mobile, on Instagram, then Google. A slow website after a social click loses the conversion at the last step.",
-        "no_reviews": "Before anyone sits in your chair for a $200 colour job, they read reviews. No visible testimonials = no bookings from cold traffic.",
-        "no_cta": "No 'Book Now' button above the fold is costing you bookings every hour. Salon clients are impulse-bookers.",
-        "no_social": "Before/after photos drive salon bookings. No Instagram link = disconnected from your primary discovery channel.",
-    },
-    "tradie": {
-        "no_phone": "Customers needing urgent work call the first person with a visible number. If it's not you, you lost the job before they read a word.",
-        "no_email": "Builders, property managers, and strata companies send quote requests by email. No email = invisible to commercial work.",
-        "no_contact_form": "A quote request form that works 24/7 is your best sales tool. Without it, you only get leads when you can answer the phone.",
-        "no_ssl": "Customers entering their home address and contact details expect security. 'Not Secure' warnings make them question your professionalism.",
-        "slow_load": "Trade services searches happen on job sites. If your page is slow, the customer calls your competitor while your page is still loading.",
-        "no_reviews": "Homeowners spend thousands on trade work. Without reviews, you're asking them to trust a stranger with their biggest asset.",
-        "no_cta": "No 'Get a Free Quote' or 'Book a Job' button means your site is not working for you. You're missing leads every single day.",
-    },
-    "default": {
-        "no_phone": "Customers ready to buy need your phone number immediately. Every second they spend searching for it increases the chance they leave.",
-        "no_email": "Many customers prefer to enquire by email first. No email address means losing this segment entirely.",
-        "no_contact_form": "A contact form captures leads 24/7 — without one, you only hear from people willing to call during business hours.",
-        "no_ssl": "A 'Not Secure' browser warning before a customer shares their details is a trust-killer. It directly reduces enquiries.",
-        "slow_load": "A 1-second delay reduces conversions by 7%. At 3+ seconds, 53% of mobile visitors leave — permanently.",
-        "no_reviews": "92% of consumers read reviews before making a decision. No visible social proof means customers choose competitors.",
-        "no_cta": "70% of small business websites lack an effective call-to-action. Without it, visitors leave having done nothing.",
-        "no_google_reviews": "Google Reviews are the first thing people see in local search results. Without them showing on your site, you lose trust immediately.",
-        "no_booking": "Online booking converts more leads than phone-only. Without it, you're losing enquiries made outside business hours.",
-        "no_social": "Social media presence builds ongoing brand awareness. Missing social links disconnects your site from your audience.",
-    }
-}
 
 
 def detect_business_type(soup: BeautifulSoup, url: str) -> tuple:
@@ -146,8 +73,7 @@ def detect_business_type(soup: BeautifulSoup, url: str) -> tuple:
 
 
 def get_impact(btype: str, issue_key: str) -> str:
-    impacts = BUSINESS_IMPACT.get(btype, BUSINESS_IMPACT["default"])
-    return impacts.get(issue_key, BUSINESS_IMPACT["default"].get(issue_key, ""))
+    return ""
 
 
 # ─── PAGE FETCH ─────────────────────────────────────────────────────────────

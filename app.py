@@ -344,15 +344,7 @@ contact   = audit.get("contact_details", {})
 btype     = audit.get("business_type", "default")
 cex       = audit.get("customer_expectations", {})
 
-btype_labels = {
-    "gym": "Gym / Martial Arts", "restaurant": "Restaurant / Café",
-    "plumber": "Plumbing Business", "dentist": "Dental Practice",
-    "salon": "Hair & Beauty Salon", "lawyer": "Law Firm",
-    "real_estate": "Real Estate Agency", "medical": "Medical Clinic",
-    "accountant": "Accounting Firm", "tradie": "Trade Business",
-    "retail": "Retail Store", "default": "Local Business"
-}
-btype_label = btype_labels.get(btype, "Local Business")
+btype_label = btype.title()
 
 if overall >= 75:   ov_color = "#10B981"; ov_status = "GOOD";       ov_cls = "good"
 elif overall >= 45: ov_color = "#F59E0B"; ov_status = "NEEDS WORK"; ov_cls = "warning"

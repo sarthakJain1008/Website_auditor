@@ -18,14 +18,6 @@ def _generate(prompt: str) -> str:
     return response.text.strip()
 AGENCY = os.getenv("AGENCY_NAME", "Ryotech")
 
-BUSINESS_TYPE_LABELS = {
-    "gym": "gym / martial arts studio", "restaurant": "restaurant / café",
-    "plumber": "plumbing business", "dentist": "dental practice",
-    "salon": "hair or beauty salon", "lawyer": "law firm",
-    "real_estate": "real estate agency", "medical": "medical clinic",
-    "accountant": "accounting firm", "tradie": "trade business",
-    "retail": "retail store", "default": "local business"
-}
 
 RYOTECH_SERVICES = [
     {
@@ -125,10 +117,31 @@ def map_issues_to_services(issues: list, btype: str) -> list:
     return result[:8]
 
 
+
+def detect_exact_business(audit: dict) -> str:
+    domain = audit.get("domain", "")
+    title = audit.get("seo_details", {}).get("title", "")
+    desc = audit.get("seo_details", {}).get("meta_description", "")
+    
+    prompt = f"""Analyze this local business website and tell me EXACTLY what type of business it is in 2-4 words.
+Domain: {domain}
+Title: {title}
+Description: {desc}
+
+Rules:
+- Be precise (e.g. "Commercial Plumber", "Boutique Pharmacy", "AI Automation Agency", "Martial Arts Gym")
+- Do not use generic terms like "Local Business" unless you have absolutely no idea.
+- Output ONLY the 2-4 word description. Nothing else."""
+    try:
+        res = _generate(prompt)
+        return res if res else "Local Business"
+    except:
+        return "Local Business"
+
 def generate_summary(audit: dict) -> str:
     score = audit["overall_score"]
     btype = audit.get("business_type", "default")
-    btype_label = BUSINESS_TYPE_LABELS.get(btype, "local business")
+    btype_label = btype
     domain = audit["domain"]
     issues = audit["all_issues"]
     positives = audit.get("all_positives", [])
@@ -172,7 +185,7 @@ def generate_issue_impact(issue: dict, btype: str, business_name: str) -> str:
     if issue.get("business_impact"):
         return issue["business_impact"]
 
-    btype_label = BUSINESS_TYPE_LABELS.get(btype, "local business")
+    btype_label = btype
     prompt = f"""Write ONE bold, specific sentence (max 25 words) explaining exactly how this website issue costs a {btype_label} called {business_name} real money or real customers.
 
 Issue: {issue['issue']}
@@ -195,7 +208,7 @@ def generate_outreach_email(audit: dict, services: list) -> str:
     biz = audit["business_name"]
     score = audit["overall_score"]
     btype = audit.get("business_type", "default")
-    btype_label = BUSINESS_TYPE_LABELS.get(btype, "local business")
+    btype_label = btype
     critical = [i for i in audit["all_issues"] if i["severity"] == "critical"]
     top_2 = critical[:2]
     issue_lines = "\n".join([f"- {i['issue']}" for i in top_2])
@@ -226,22 +239,48 @@ Do NOT use: exclamation marks, "I hope this finds you well", "revolutionary", "g
 
 
 def enrich_audit(audit: dict) -> dict:
-    print("[AI] Detecting business type:", audit.get("business_type"))
+    print("[AI] Detecting exact business type...")
+    audit["business_type"] = detect_exact_business(audit)
+    print("[AI] Detected as:", audit["business_type"])
+    
     print("[AI] Generating summary...")
     audit["ai_summary"] = generate_summary(audit)
 
     print("[AI] Mapping services...")
     audit["recommended_services"] = map_issues_to_services(
-        audit["all_issues"], audit.get("business_type", "default")
+        audit["all_issues"], audit.get("business_type", "Local Business")
     )
 
     print("[AI] Generating issue impacts...")
-    btype = audit.get("business_type", "default")
+    btype = audit.get("business_type", "Local Business")
     biz = audit.get("business_name", "this business")
     for issue in audit["all_issues"]:
-        if issue["severity"] in ("critical", "medium") and not issue.get("business_impact"):
+        if not issue.get("business_impact"):
             issue["business_impact"] = generate_issue_impact(issue, btype, biz)
 
     print("[AI] Writing outreach email...")
     audit["outreach_email"] = generate_outreach_email(audit, audit["recommended_services"])
+    
+    # Also generate customer expectations
+    print("[AI] Generating customer expectations...")
+    try:
+        cex_prompt = f"""List 3 specific things that customers of a {btype} specifically look for on a website before choosing them.
+Format EXACTLY as JSON:
+{{
+  "label": "{btype}",
+  "headline_stat": "A realistic but punchy statistic about {btype} customers online (e.g. 78% of people research...).",
+  "missing": [
+      {{"name": "Missing Expectation 1", "why": "Why it matters", "stat": "A specific stat"}}
+  ],
+  "met": []
+}}
+"""
+        res = _generate(cex_prompt)
+        if "{" in res and "}" in res:
+            import json
+            json_str = res[res.find("{"):res.rfind("}")+1]
+            audit["customer_expectations"] = json.loads(json_str)
+    except:
+        pass
+        
     return audit
