@@ -1,328 +1,147 @@
 """
-ai_engine.py — AI-first audit engine.
-Gemini reads the actual HTML and audits contact info, CTAs, trust signals,
-and business type — replacing fragile regex/keyword matching.
-Python still handles: SEO tags, security headers, performance timing, mobile viewport.
+ai_engine.py — Optional AI polish + deterministic content generation.
+
+Design principle (senior-dev decision):
+  The AUDIT SCORING is 100% deterministic and lives in audit_engine.py.
+  This module NEVER decides pass/fail — it only:
+    1. (optional) Uses Gemini to read the HTML as a second opinion that can
+       ADD findings the deterministic pass missed (never remove them).
+    2. Writes the plain-English summary + outreach email.
+
+  Gemini is OPTIONAL. If no valid API key is present, every function here
+  falls back to a strong deterministic template. The tool stays precise and
+  fast whether or not an API key exists — a broken key can never break the audit.
 """
-from google import genai
-from google.genai import types
 from dotenv import load_dotenv
 import os
 import re
 import json
 
 load_dotenv()
-_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", ""))
+
 AGENCY = os.getenv("AGENCY_NAME", "Ryotech")
+_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+
+# A real Google AI Studio / Gemini key starts with "AIza". Anything else
+# (OAuth tokens, blanks, placeholders) is treated as "no AI" so we skip the
+# network calls entirely instead of hanging 15s per call on a doomed request.
+AI_ENABLED = _API_KEY.startswith("AIza")
+
+_client = None
+if AI_ENABLED:
+    try:
+        from google import genai
+        _client = genai.Client(api_key=_API_KEY)
+    except Exception as e:
+        print(f"[AI] Gemini client init failed, running deterministic-only: {e}")
+        AI_ENABLED = False
+
+if not AI_ENABLED:
+    print("[AI] No valid GEMINI_API_KEY (expected 'AIza...') — running in "
+          "deterministic mode. Audit is fully accurate; prose uses templates.")
 
 
 def _generate(prompt: str) -> str:
+    """Call Gemini. Raises if AI is disabled so callers use their fallback."""
+    if not AI_ENABLED or _client is None:
+        raise RuntimeError("AI disabled")
     response = _client.models.generate_content(
         model="gemini-2.0-flash",
-        contents=prompt
+        contents=prompt,
     )
     return response.text.strip()
 
 
 def _clean_html_for_ai(raw_html: str, max_chars: int = 18000) -> str:
     """Strip noise from HTML but keep meaningful structure for AI to read."""
-    # Remove script, style, svg, noscript blocks
     cleaned = re.sub(r'<script[^>]*>.*?</script>', '', raw_html, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r'<style[^>]*>.*?</style>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r'<svg[^>]*>.*?</svg>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r'<noscript[^>]*>.*?</noscript>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
-    # Remove HTML comments
     cleaned = re.sub(r'<!--.*?-->', '', cleaned, flags=re.DOTALL)
-    # Collapse whitespace
     cleaned = re.sub(r'\s+', ' ', cleaned)
-    # Truncate to stay within token limits
     if len(cleaned) > max_chars:
         cleaned = cleaned[:max_chars]
     return cleaned.strip()
 
 
-# ─── CORE AI AUDIT ───────────────────────────────────────────────────────────
-# One Gemini call that reads the HTML and audits contact, CTA, trust signals.
+# ─── BUSINESS TYPE ───────────────────────────────────────────────────────────
+# Deterministic classifier from title/meta/visible text. Used always; the AI
+# overlay can refine it to a more exact label when a key is present.
+
+_BTYPE_KEYWORDS = [
+    ("Pharmacy", ["pharmacy", "chemist", "prescription", "gphc", "dispensing"]),
+    ("Dental Practice", ["dentist", "dental", "orthodont", "teeth whitening"]),
+    ("Medical Clinic", ["clinic", "gp surgery", "doctor", "medical centre", "physio"]),
+    ("Law Firm", ["solicitor", "law firm", "lawyer", "conveyancing", "legal advice"]),
+    ("Accounting Firm", ["accountant", "accounting", "bookkeeping", "tax return"]),
+    ("Plumbing Business", ["plumber", "plumbing", "boiler", "heating engineer", "drainage"]),
+    ("Electrician", ["electrician", "electrical", "rewire", "fuse box"]),
+    ("Roofing / Trade", ["roofer", "roofing", "builder", "construction", "landscaping"]),
+    ("Hair & Beauty Salon", ["salon", "barber", "hairdress", "beauty", "nails", "spa"]),
+    ("Gym / Fitness Studio", ["gym", "fitness", "personal train", "jiu jitsu", "martial art", "yoga", "pilates"]),
+    ("Restaurant / Café", ["restaurant", "cafe", "café", "bistro", "takeaway", "menu", "book a table"]),
+    ("Estate Agency", ["estate agent", "letting", "property for sale", "real estate"]),
+    ("Veterinary Practice", ["veterinary", "vet ", "animal hospital"]),
+    ("Automotive / Garage", ["garage", "mot", "car repair", "servicing", "mechanic", "tyres"]),
+    ("Cleaning Service", ["cleaning", "cleaner", "carpet clean", "domestic clean"]),
+    ("Retail Store", ["shop", "store", "boutique", "add to cart", "buy now"]),
+]
+
+
+def detect_business_type(title: str, meta: str, text: str = "") -> str:
+    """Best-effort deterministic business type from page signals."""
+    hay = f"{title} {meta} {text}".lower()
+    for label, kws in _BTYPE_KEYWORDS:
+        if any(kw in hay for kw in kws):
+            return label
+    return "Local Business"
+
+
+# ─── OPTIONAL AI OVERLAY (reads HTML as a second opinion) ────────────────────
 
 def ai_audit_page(full_html: str, domain: str) -> dict:
-    """Send cleaned HTML to Gemini for a full content audit.
-    Returns structured dict with contact, CTA, trust findings + business type.
-    """
-    cleaned = _clean_html_for_ai(full_html)
+    """Optional: ask Gemini to read the HTML and report content signals.
+    Returns {} when AI is unavailable so the caller keeps its deterministic result."""
+    if not AI_ENABLED:
+        return {}
 
-    prompt = f"""You are a senior website auditor. Analyze this website's HTML and report what you find.
+    cleaned = _clean_html_for_ai(full_html)
+    prompt = f"""You are a senior website auditor. Read this website's HTML and report what you find.
 Website domain: {domain}
 
 HTML content:
 {cleaned}
 
-Analyze the HTML carefully and return a JSON object with these EXACT keys:
-
+Return ONLY a JSON object (no markdown, no backticks) with these EXACT keys:
 {{
-  "business_type": "Exact business type in 2-4 words (e.g. 'Online Pharmacy', 'AI Automation Agency', 'Martial Arts Gym')",
-
+  "business_type": "Exact business type in 2-4 words",
   "contact": {{
-    "phone_found": true/false,
-    "phone_number": "the actual phone number found, or empty string",
-    "phone_clickable": true/false (is there a tel: link?),
-    "email_found": true/false,
-    "email_address": "the actual email found, or empty string",
-    "contact_form_found": true/false,
-    "address_found": true/false,
-    "address_text": "the actual address found, or empty string",
-    "google_maps_found": true/false
+    "phone_found": true/false, "phone_clickable": true/false,
+    "email_found": true/false, "contact_form_found": true/false,
+    "address_found": true/false, "google_maps_found": true/false
   }},
-
-  "cta": {{
-    "ctas_found": ["list of CTA button texts found, e.g. 'Book Now', 'Get a Quote'"],
-    "has_booking_system": true/false,
-    "booking_platform": "name of booking platform if detected, or empty string"
-  }},
-
+  "cta": {{ "ctas_found": ["button texts"], "has_booking_system": true/false }},
   "trust": {{
-    "has_reviews": true/false,
-    "review_platforms": ["list of review platforms found, e.g. 'Trustpilot', 'Google Reviews'"],
-    "has_google_reviews": true/false,
-    "has_trust_badges": true/false,
-    "trust_badges_found": ["e.g. 'Licensed', 'Insured', 'BBB Accredited'"],
-    "has_social_links": true/false,
-    "social_platforms": ["e.g. 'Facebook', 'Instagram'"],
+    "has_reviews": true/false, "has_google_reviews": true/false,
+    "has_trust_badges": true/false, "has_social_links": true/false,
     "has_about_section": true/false
   }}
 }}
-
-Rules:
-- Look at BOTH visible text AND HTML attributes (href, src, data attributes, JSON-LD schema, meta tags)
-- For phone: check tel: links, href attributes, visible text, JSON-LD
-- For email: check mailto: links, visible text, Cloudflare-protected emails (__cf_email__)
-- For contact form: check <form> tags, embedded platforms (Typeform, HubSpot, JotForm, WPForms)
-- For address: check visible text, JSON-LD streetAddress/addressLocality, footer content
-- For CTAs: look at <button> and <a> tags with action-oriented text
-- For booking: check for Calendly, Fresha, MindBody, Acuity, OpenTable, or similar
-- For reviews: check for review widgets, testimonial sections, star ratings
-- For social: check for links to Facebook, Instagram, LinkedIn, Twitter/X, YouTube, TikTok
-- Be accurate. Only report things you actually find in the HTML. Do NOT guess.
-- Output ONLY the JSON object. No markdown formatting, no backticks, no explanation."""
-
+Rules: Check BOTH visible text AND attributes (href, mailto:, tel:, JSON-LD, meta).
+Only report what you actually find. Do NOT guess."""
     try:
-        raw_response = _generate(prompt)
-        # Extract JSON from response
-        json_str = raw_response
-        if "```" in json_str:
-            json_str = re.sub(r'```json?\s*', '', json_str)
-            json_str = re.sub(r'```', '', json_str)
-        json_str = json_str.strip()
-        result = json.loads(json_str)
-        print(f"[AI Audit] Business type: {result.get('business_type', 'unknown')}")
-        return result
-    except json.JSONDecodeError as e:
-        print(f"[AI Audit] JSON parse error: {e}")
-        print(f"[AI Audit] Raw response: {raw_response[:200]}")
-        return _fallback_result()
+        raw = _generate(prompt)
+        if "```" in raw:
+            raw = re.sub(r'```json?\s*', '', raw)
+            raw = re.sub(r'```', '', raw)
+        return json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
     except Exception as e:
-        print(f"[AI Audit] API error: {e}")
-        return _fallback_result()
+        print(f"[AI Audit] overlay unavailable: {e}")
+        return {}
 
 
-def _fallback_result() -> dict:
-    """Fallback when AI is unavailable — returns conservative defaults."""
-    return {
-        "business_type": "Local Business",
-        "contact": {
-            "phone_found": False, "phone_number": "",
-            "phone_clickable": False,
-            "email_found": False, "email_address": "",
-            "contact_form_found": False,
-            "address_found": False, "address_text": "",
-            "google_maps_found": False,
-        },
-        "cta": {
-            "ctas_found": [],
-            "has_booking_system": False,
-            "booking_platform": "",
-        },
-        "trust": {
-            "has_reviews": False, "review_platforms": [],
-            "has_google_reviews": False,
-            "has_trust_badges": False, "trust_badges_found": [],
-            "has_social_links": False, "social_platforms": [],
-            "has_about_section": False,
-        },
-    }
-
-
-# ─── SCORING FROM AI RESULTS ────────────────────────────────────────────────
-
-def score_contact(ai_contact: dict) -> dict:
-    """Convert AI contact findings into score, issues, positives."""
-    issues, positives = [], []
-    score = 0
-
-    if ai_contact.get("phone_found"):
-        score += 30
-        phone = ai_contact.get("phone_number", "")
-        positives.append(f"Phone number found{': ' + phone if phone else ''}")
-    else:
-        issues.append({"severity": "critical",
-                       "issue": "No phone number found on the website",
-                       "fix": "Add your phone number to the header AND footer. Make it a clickable tel: link for mobile users.",
-                       "impact_key": "no_phone"})
-
-    if ai_contact.get("phone_clickable"):
-        score += 10
-        positives.append("Phone is clickable (tel: link)")
-    elif ai_contact.get("phone_found"):
-        issues.append({"severity": "medium",
-                       "issue": "Phone number exists but is NOT clickable on mobile",
-                       "fix": "Wrap your phone number in <a href='tel:+1...'> so mobile visitors can tap-to-call instantly.",
-                       "impact_key": "no_tel_link"})
-
-    if ai_contact.get("email_found"):
-        score += 15
-        positives.append("Email address found")
-    else:
-        issues.append({"severity": "medium",
-                       "issue": "No email address visible on the site",
-                       "fix": "Add a contact email address. Use a professional domain email (you@yourbusiness.com) not Gmail or Hotmail.",
-                       "impact_key": "no_email"})
-
-    if ai_contact.get("contact_form_found"):
-        score += 25
-        positives.append("Contact / enquiry form present")
-    else:
-        issues.append({"severity": "critical",
-                       "issue": "No contact form found — you are only reachable when you can answer the phone",
-                       "fix": "Add a simple contact form: Name, Email, Phone, Message. This captures leads 24/7 including nights and weekends.",
-                       "impact_key": "no_contact_form"})
-
-    if ai_contact.get("address_found"):
-        score += 10
-        positives.append("Physical address visible")
-    else:
-        issues.append({"severity": "medium",
-                       "issue": "Physical address not clearly visible — hurts local SEO and trust",
-                       "fix": "Show your full street address in the footer. Required for Google Business Profile consistency and local search rankings.",
-                       "impact_key": "no_address"})
-
-    if ai_contact.get("google_maps_found"):
-        score += 10
-        positives.append("Google Maps embedded or linked")
-    else:
-        issues.append({"severity": "low",
-                       "issue": "No Google Maps embed or link",
-                       "fix": "Embed a Google Map showing your location. It reinforces you're a real, established local business.",
-                       "impact_key": "no_map"})
-
-    return {"score": min(score, 100), "issues": issues, "positives": positives,
-            "details": {
-                "phone_found": ai_contact.get("phone_found", False),
-                "email_found": ai_contact.get("email_found", False),
-                "contact_form": ai_contact.get("contact_form_found", False),
-                "address_found": ai_contact.get("address_found", False),
-                "google_maps": ai_contact.get("google_maps_found", False),
-                "tel_link": ai_contact.get("phone_clickable", False),
-            }}
-
-
-def score_cta(ai_cta: dict) -> dict:
-    """Convert AI CTA findings into score, issues, positives."""
-    issues, positives = [], []
-    score = 0
-
-    ctas = ai_cta.get("ctas_found", [])
-    if len(ctas) >= 3:
-        score += 50
-        positives.append(f"{len(ctas)} CTAs found throughout page")
-    elif len(ctas) == 2:
-        score += 35
-        issues.append({"severity": "medium",
-                       "issue": "Only 2 CTAs found — add more throughout the page",
-                       "fix": "Place CTAs at top, middle, and bottom. Repeat your primary CTA at least 3 times on a homepage.",
-                       "impact_key": "weak_cta"})
-    elif len(ctas) == 1:
-        score += 20
-        issues.append({"severity": "critical",
-                       "issue": "Only 1 CTA found — 70% of small business sites have this problem",
-                       "fix": "Add clear CTA buttons at the top (hero section), after every service, and in the footer.",
-                       "impact_key": "no_cta"})
-    else:
-        issues.append({"severity": "critical",
-                       "issue": "No call-to-action buttons found — visitors have no clear next step",
-                       "fix": "Add prominent CTA buttons: 'Book Now', 'Get a Free Quote', 'Call Us'. Highest-ROI change you can make.",
-                       "impact_key": "no_cta"})
-
-    if ai_cta.get("has_booking_system"):
-        score += 30
-        platform = ai_cta.get("booking_platform", "")
-        positives.append(f"Online booking present{' (' + platform + ')' if platform else ''}")
-    else:
-        issues.append({"severity": "medium",
-                       "issue": "No online booking or scheduling system found",
-                       "fix": "Integrate a free booking tool (Calendly, Fresha, or a simple form). Businesses with online booking convert 3x more website visitors.",
-                       "impact_key": "no_booking"})
-
-    # Phone CTA bonus (max 20 pts) — handled in contact scoring
-    return {"score": min(score, 100), "issues": issues, "positives": positives,
-            "ctas_found": ctas[:5]}
-
-
-def score_trust(ai_trust: dict) -> dict:
-    """Convert AI trust findings into score, issues, positives."""
-    issues, positives = [], []
-    score = 0
-
-    if ai_trust.get("has_reviews"):
-        score += 30
-        platforms = ai_trust.get("review_platforms", [])
-        positives.append(f"Reviews/testimonials found{' (' + ', '.join(platforms) + ')' if platforms else ''}")
-    else:
-        issues.append({"severity": "critical",
-                       "issue": "No customer testimonials or reviews section",
-                       "fix": "Add a dedicated testimonials section with 3-5 real customer quotes, names, and if possible, photos.",
-                       "impact_key": "no_reviews"})
-
-    if ai_trust.get("has_google_reviews"):
-        score += 25
-        positives.append("Google Reviews reference found")
-    else:
-        issues.append({"severity": "critical",
-                       "issue": "No Google Reviews link or widget — the most trusted review source is missing",
-                       "fix": "Add a 'See Our Google Reviews' button linked to your Google Business Profile, or embed a Google Reviews widget.",
-                       "impact_key": "no_google_reviews"})
-
-    if ai_trust.get("has_trust_badges"):
-        score += 20
-        badges = ai_trust.get("trust_badges_found", [])
-        positives.append(f"Trust badges/credentials present{' (' + ', '.join(badges[:3]) + ')' if badges else ''}")
-    else:
-        issues.append({"severity": "medium",
-                       "issue": "No licences, certifications, or trust badges visible",
-                       "fix": "Display any professional licences, industry memberships, awards, or satisfaction guarantees.",
-                       "impact_key": "no_trust_badges"})
-
-    if ai_trust.get("has_social_links"):
-        score += 15
-        socials = ai_trust.get("social_platforms", [])
-        positives.append(f"Social media links present{' (' + ', '.join(socials[:3]) + ')' if socials else ''}")
-    else:
-        issues.append({"severity": "medium",
-                       "issue": "No social media links — isolated from your biggest free marketing channels",
-                       "fix": "Add visible links to your active social profiles (Facebook, Instagram).",
-                       "impact_key": "no_social"})
-
-    if ai_trust.get("has_about_section"):
-        score += 10
-        positives.append("About/team information present")
-    else:
-        issues.append({"severity": "low",
-                       "issue": "No 'About Us' or team information found",
-                       "fix": "Add a short About section with your story, your team, or why you started the business.",
-                       "impact_key": "no_about"})
-
-    return {"score": min(score, 100), "issues": issues, "positives": positives}
-
-
-# ─── SERVICE MAPPING ─────────────────────────────────────────────────────────
+# ─── SERVICE MAPPING (deterministic) ─────────────────────────────────────────
 
 RYOTECH_SERVICES = [
     {"name": "Website Security & SSL Setup",
@@ -390,25 +209,59 @@ def map_issues_to_services(issues: list, btype: str) -> list:
                         "description": service["description"],
                         "outcome": service["outcome"],
                         "triggered_by": issue["issue"][:80],
-                        "severity": issue["severity"]
+                        "severity": issue["severity"],
                     }
     sev_order = {"critical": 0, "medium": 1, "low": 2}
     result = sorted(matched_services.values(), key=lambda x: sev_order.get(x["severity"], 9))
     return result[:8]
 
 
-# ─── AI TEXT GENERATION ──────────────────────────────────────────────────────
+# ─── PLAIN-ENGLISH SUMMARY (AI polish → deterministic fallback) ──────────────
+
+def _score_verdict(score: int) -> str:
+    if score >= 75:
+        return "in good shape"
+    if score >= 45:
+        return "doing some things right but leaking potential customers"
+    return "losing customers it should be winning"
+
+
+def _fallback_summary(audit: dict) -> str:
+    score = audit["overall_score"]
+    btype = audit.get("business_type", "Local Business")
+    critical = [i for i in audit["all_issues"] if i["severity"] == "critical"]
+    verdict = _score_verdict(score)
+
+    p1 = (f"This {btype.lower()} website scored {score} out of 100, which means it's "
+          f"{verdict}. ")
+    if critical:
+        p1 += (f"We found {len(critical)} critical problem"
+               f"{'s' if len(critical) != 1 else ''} standing between visitors "
+               f"and making an enquiry.")
+    else:
+        p1 += "The fundamentals are solid, with only smaller refinements left to make."
+
+    if critical:
+        top = critical[0]["issue"].rstrip(".")
+        p2 = (f"The most urgent one: {top.lower()}. For a {btype.lower()}, most people "
+              f"decide in seconds whether to trust you and get in touch — every gap here "
+              f"is a visitor who quietly leaves for a competitor instead of picking up the "
+              f"phone or filling in a form.")
+    else:
+        p2 = (f"With the basics in place, the next wins are about polish and conversion — "
+              f"making it even easier and faster for a visitor to become an enquiry.")
+    return p1 + "\n\n" + p2
+
 
 def generate_summary(audit: dict) -> str:
+    if not AI_ENABLED:
+        return _fallback_summary(audit)
+
     score = audit["overall_score"]
     btype = audit.get("business_type", "Local Business")
     domain = audit["domain"]
-    issues = audit["all_issues"]
+    critical = [i for i in audit["all_issues"] if i["severity"] == "critical"]
     positives = audit.get("all_positives", [])
-    critical = [i for i in issues if i["severity"] == "critical"]
-    rt = audit.get("response_time", 0)
-    is_https = audit.get("is_https", True)
-
     crit_text = "\n".join([f"- {i['issue']}" for i in critical[:4]]) or "No critical issues"
     pos_text = "\n".join([f"- {p}" for p in positives[:4]]) or "No standout positives"
 
@@ -421,55 +274,122 @@ Critical issues:
 What's working:
 {pos_text}
 
-Additional facts: HTTPS = {is_https}, Response time = {rt}s
+Write exactly 2 short paragraphs in plain English:
+Paragraph 1: Honest overall assessment tied to their score and what it means for a {btype}.
+Paragraph 2: The single most urgent problem and how it costs this {btype} customers right now.
 
-Write exactly 2 paragraphs in plain English:
-Paragraph 1 (2-3 sentences): Honest overall assessment. Mention their score and what it means for their business specifically as a {btype}.
-Paragraph 2 (2-3 sentences): The most urgent problem and specifically how it is costing this {btype} customers right now. Be direct and specific.
-
-Strict rules:
-- NO bullet points — prose only
-- NO words: "crucial", "leverage", "paramount", "delve", "furthermore", "in conclusion", "it's worth noting"
-- Short direct sentences. Business owner language.
-- Reference the specific business type ({btype}) in your impact statements
-- Do NOT mention the word "audit"
-"""
+Rules: prose only, no bullet points, short direct sentences, business-owner language.
+Do NOT use: "crucial", "leverage", "delve", "furthermore", "in conclusion". Do NOT use the word "audit"."""
     try:
         return _generate(prompt)
     except Exception:
-        return f"This website scored {score}/100. There are {len(critical)} critical problems that need immediate attention to stop losing customers."
+        return _fallback_summary(audit)
+
+
+# ─── PER-ISSUE BUSINESS IMPACT (AI polish → deterministic lookup) ────────────
+
+_IMPACT_MAP = {
+    "no_phone": "This means anyone ready to buy right now can't call you — and most won't hunt for another way.",
+    "no_tel_link": "This means mobile visitors have to copy your number by hand, and many give up before they do.",
+    "no_email": "This means people who prefer to write rather than call have no way to reach you at all.",
+    "no_contact_form": "This means every enquiry outside business hours is lost — nights and weekends included.",
+    "no_address": "This means Google and customers can't confirm you're a real local business, hurting local rankings and trust.",
+    "no_map": "This means new customers can't picture where you are, which quietly lowers confidence in booking.",
+    "no_cta": "This means visitors reach your page, feel interested, then leave because nothing tells them what to do next.",
+    "weak_cta": "This means your primary action is easy to miss, so interested visitors slip away instead of enquiring.",
+    "no_booking": "This means every booking has to go through a phone call, and you lose the ones who'd rather book online at 11pm.",
+    "no_reviews": "This means first-time visitors have no proof other people trusted you, the #1 reason locals choose one business over another.",
+    "no_google_reviews": "This means your most trusted review source is invisible on your own site, so visitors go check competitors instead.",
+    "no_trust_badges": "This means nothing on the page reassures a cautious buyer that you're qualified, insured, or established.",
+    "no_social": "This means you're cut off from the free channels where locals discover and vet businesses like yours.",
+    "no_about": "This means visitors can't see the people behind the business, which makes a first enquiry feel riskier.",
+    "no_ssl": "This means every visitor sees a 'Not Secure' warning — an instant credibility killer before they read a word.",
+    "no_security_headers": "This means the site is missing basic hardening that protects visitors and your reputation.",
+    "form_on_http": "This means customer details are sent unencrypted, which is both a trust and a compliance problem.",
+    "slow_load": "This means visitors on phones wait, get impatient, and bounce before your page even finishes loading.",
+    "large_page": "This means the page is heavy on mobile data and slow to appear, costing you impatient visitors.",
+    "unoptimized_images": "This means oversized images slow the page down, and speed directly affects how many people stay.",
+    "no_cache": "This means repeat visitors re-download everything each time, making the site feel sluggish.",
+    "no_viewport": "This means the site renders as a shrunken desktop page on phones — where most of your traffic is.",
+    "bad_viewport": "This means the mobile layout can misbehave, frustrating the majority of visitors who arrive on a phone.",
+    "small_text": "This means mobile visitors have to pinch and zoom to read, and many just leave instead.",
+    "fixed_width": "This means parts of the page overflow the screen on mobile, forcing awkward sideways scrolling.",
+    "mobile_slow": "This means phone users — usually your biggest audience — wait too long and give up.",
+    "seo_title": "This means Google struggles to show you for the searches your customers actually type.",
+    "seo_meta": "This means Google writes your search snippet for you, usually in a way that wins fewer clicks.",
+    "seo_h1": "This means search engines get no clear signal about what this page is for, weakening your rankings.",
+    "seo_images": "This means image search and screen readers can't understand your visuals, a small SEO and accessibility loss.",
+    "seo_canonical": "This means duplicate versions of a page can compete with each other in Google.",
+    "no_schema": "This means you miss out on rich Google results — stars, address, hours — that make listings stand out.",
+    "seo_og": "This means links to your site look plain and unappealing when shared on social media.",
+}
 
 
 def generate_issue_impact(issue: dict, btype: str, business_name: str) -> str:
-    """Generate a bold, specific business impact statement for each issue."""
+    """Bold, specific impact line. Deterministic lookup, optionally refined by AI."""
     if issue.get("business_impact"):
         return issue["business_impact"]
 
-    prompt = f"""Write ONE bold, specific sentence (max 25 words) explaining exactly how this website issue costs a {btype} called {business_name} real money or real customers.
+    base = _IMPACT_MAP.get(issue.get("impact_key", ""), "")
+    if not AI_ENABLED:
+        return base
+
+    prompt = f"""Write ONE bold, specific sentence (max 25 words) explaining exactly how this
+website issue costs a {btype} called {business_name} real customers.
 
 Issue: {issue['issue']}
 
-Rules:
-- Specific to a {btype}, not generic
-- Include a stat or specific consequence if natural
-- Start with "This means" or use direct cause-effect language
-- NO fluff, NO corporate speak
-- Sound like a straight-talking consultant, not a salesperson
-"""
+Rules: specific to a {btype}, direct cause-effect, no corporate speak, no fluff.
+Start with "This means" or similar."""
     try:
-        return _generate(prompt)
+        return _generate(prompt) or base
     except Exception:
-        return ""
+        return base
+
+
+# ─── OUTREACH EMAIL (AI polish → deterministic template) ─────────────────────
+
+def _fallback_outreach(audit: dict, services: list) -> str:
+    biz = audit["business_name"]
+    btype = audit.get("business_type", "Local Business")
+    critical = [i for i in audit["all_issues"] if i["severity"] == "critical"]
+    top = critical[:2] if critical else audit["all_issues"][:2]
+
+    if len(top) >= 2:
+        problems = (f"a couple of things stood out — {top[0]['issue'].lower().rstrip('.')}, "
+                    f"and {top[1]['issue'].lower().rstrip('.')}")
+    elif len(top) == 1:
+        problems = f"one thing stood out — {top[0]['issue'].lower().rstrip('.')}"
+    else:
+        problems = "a few small things that could be tightened up"
+
+    fix_line = ""
+    if services:
+        fix_line = (f" Both are quick wins we help {btype.lower()}s with all the time, and "
+                    f"fixing them usually means more of your existing visitors actually get in touch.")
+
+    return (
+        f"Hi,\n\n"
+        f"I came across {biz} while looking at local {btype.lower()} websites and had a proper look "
+        f"at your site. It's clearly a real business, so I hope you don't mind me reaching out.\n\n"
+        f"While I was there, {problems}.{fix_line}\n\n"
+        f"No pitch and no obligation — if it's useful, I'm happy to jump on a quick 15-minute call "
+        f"and walk you through exactly what I'd change and why. Totally up to you.\n\n"
+        f"Either way, all the best with the business.\n\n"
+        f"— [Your Name], {AGENCY}"
+    )
 
 
 def generate_outreach_email(audit: dict, services: list) -> str:
+    if not AI_ENABLED:
+        return _fallback_outreach(audit, services)
+
     domain = audit["domain"]
     biz = audit["business_name"]
     score = audit["overall_score"]
     btype = audit.get("business_type", "Local Business")
     critical = [i for i in audit["all_issues"] if i["severity"] == "critical"]
-    top_2 = critical[:2]
-    issue_lines = "\n".join([f"- {i['issue']}" for i in top_2])
+    issue_lines = "\n".join([f"- {i['issue']}" for i in critical[:2]])
     top_services = ", ".join([s["service"] for s in services[:2]])
 
     prompt = f"""Write a short outreach email from {AGENCY} to the owner of {biz} ({domain}).
@@ -480,77 +400,80 @@ Two specific problems found:
 
 Services that could help: {top_services}
 
-Write a 150-180 word email that:
-1. Opens with something genuine and specific about their business type (not generic "I was browsing the web")
-2. Mentions exactly 2 specific problems from the list in natural, conversational language — NOT in bullet points
-3. Does NOT use the word "audit", "report", or "analyse" — say "I had a look at your site"
-4. Closes with a soft, non-pushy ask: offer a 15-minute call, no obligation
-5. Signs off as "[Your Name], {AGENCY}"
-6. Reads like a real person who genuinely noticed these things — NOT a sales pitch
-
-Do NOT use: exclamation marks, "I hope this finds you well", "revolutionary", "game-changing", bullet points"""
-
+Write 150-180 words that:
+1. Opens with something genuine about their specific business type.
+2. Mentions exactly 2 specific problems in natural prose (NOT bullets).
+3. Never uses the words "audit", "report", or "analyse" — say "I had a look at your site".
+4. Closes with a soft, no-obligation offer of a 15-minute call.
+5. Signs off as "[Your Name], {AGENCY}".
+Do NOT use: exclamation marks, "I hope this finds you well", bullet points."""
     try:
         return _generate(prompt)
     except Exception:
-        return f"Hi,\n\nI came across {biz} online and wanted to reach out about a couple of things I noticed on your site.\n\nWould you be open to a 15-minute call this week?\n\n— [Your Name], {AGENCY}"
+        return _fallback_outreach(audit, services)
 
 
-# ─── ENRICHMENT PIPELINE ────────────────────────────────────────────────────
+# ─── CUSTOMER EXPECTATIONS (deterministic, findings-driven) ──────────────────
+
+def _has_positive(audit: dict, *needles: str) -> bool:
+    pos = " ".join(audit.get("all_positives", [])).lower()
+    return any(n in pos for n in needles)
+
+
+def build_customer_expectations(audit: dict) -> dict:
+    """Deterministic 'what your customers look for' panel, driven by real findings."""
+    btype = audit.get("business_type", "Local Business")
+    c = audit.get("contact_details", {})
+
+    checks = [
+        {"name": "Clear way to contact you",
+         "present": bool(c.get("phone_found") or c.get("email_found") or c.get("contact_form")),
+         "why": "People decide fast — if they can't see how to reach you, they move on.",
+         "stat": "Most visitors leave within seconds if contact options aren't obvious."},
+        {"name": "Proof other people trust you",
+         "present": _has_positive(audit, "review", "testimonial"),
+         "why": "Reviews and testimonials are the number one thing that turns a browser into an enquiry.",
+         "stat": "The vast majority of people check reviews before choosing a local business."},
+        {"name": "Works well on a phone",
+         "present": audit.get("scores", {}).get("mobile", 0) >= 60,
+         "why": "Most of your visitors arrive on a mobile — a clunky mobile page loses them.",
+         "stat": "Over 60% of local searches happen on a phone."},
+        {"name": "Loads quickly and feels secure",
+         "present": bool(audit.get("is_https")) and audit.get("scores", {}).get("performance", 0) >= 50,
+         "why": "A slow page or a 'Not Secure' warning kills trust before they read anything.",
+         "stat": "Every extra second of load time measurably increases the number of people who leave."},
+        {"name": "An easy next step (book / enquire)",
+         "present": _has_positive(audit, "cta", "booking", "call-to-action") or bool(c.get("contact_form")),
+         "why": "A clear 'Book Now' or 'Get a Quote' button removes the friction between interest and action.",
+         "stat": "Sites with a clear primary action convert noticeably more visitors."},
+    ]
+
+    missing = [{"name": x["name"], "why": x["why"], "stat": x["stat"]} for x in checks if not x["present"]]
+    met = [{"name": x["name"], "why": x["why"], "stat": x["stat"]} for x in checks if x["present"]]
+
+    return {
+        "label": btype,
+        "headline_stat": (f"Before choosing a {btype.lower()}, most people quietly judge the "
+                          f"website first — and decide in seconds whether you're worth an enquiry."),
+        "missing": missing,
+        "met": met,
+    }
+
+
+# ─── ENRICHMENT PIPELINE ─────────────────────────────────────────────────────
 
 def enrich_audit(audit: dict) -> dict:
-    """Add AI-generated content to audit results (summary, impacts, email, expectations)."""
+    """Add generated content to audit results (summary, impacts, email, expectations)."""
     btype = audit.get("business_type", "Local Business")
-
-    print("[AI] Generating summary...")
-    audit["ai_summary"] = generate_summary(audit)
-
-    print("[AI] Mapping services...")
-    audit["recommended_services"] = map_issues_to_services(
-        audit["all_issues"], btype
-    )
-
-    print("[AI] Generating issue impacts...")
     biz = audit.get("business_name", "this business")
+
+    audit["ai_summary"] = generate_summary(audit)
+    audit["recommended_services"] = map_issues_to_services(audit["all_issues"], btype)
+
     for issue in audit["all_issues"]:
         if not issue.get("business_impact"):
             issue["business_impact"] = generate_issue_impact(issue, btype, biz)
 
-    print("[AI] Writing outreach email...")
     audit["outreach_email"] = generate_outreach_email(audit, audit["recommended_services"])
-
-    # Generate customer expectations dynamically
-    print("[AI] Generating customer expectations...")
-    try:
-        cex_prompt = f"""You are a business consultant. List 4 specific things that customers of a {btype} specifically look for on a website before choosing them.
-
-For each item, check if it's likely present based on this info:
-- Phone found: {audit.get('contact_details', {}).get('phone_found', False)}
-- Email found: {audit.get('contact_details', {}).get('email_found', False)}
-- Contact form: {audit.get('contact_details', {}).get('contact_form', False)}
-- Has reviews: {any('review' in p.lower() or 'testimonial' in p.lower() for p in audit.get('all_positives', []))}
-- Has booking: {any('booking' in p.lower() for p in audit.get('all_positives', []))}
-
-Format EXACTLY as JSON (no markdown, no backticks):
-{{
-  "label": "{btype}",
-  "headline_stat": "A realistic punchy statistic about {btype} customers researching online.",
-  "missing": [
-      {{"name": "Expectation Name", "why": "Why it matters in 1 sentence", "stat": "A specific stat"}}
-  ],
-  "met": [
-      {{"name": "Expectation Name", "why": "Why it matters in 1 sentence", "stat": "A specific stat"}}
-  ]
-}}"""
-        res = _generate(cex_prompt)
-        if "{" in res and "}" in res:
-            json_str = res
-            if "```" in json_str:
-                json_str = re.sub(r'```json?\s*', '', json_str)
-                json_str = re.sub(r'```', '', json_str)
-            json_str = json_str[json_str.find("{"):json_str.rfind("}") + 1]
-            audit["customer_expectations"] = json.loads(json_str)
-    except Exception:
-        pass
-
+    audit["customer_expectations"] = build_customer_expectations(audit)
     return audit

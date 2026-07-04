@@ -312,76 +312,9 @@ def generate_report(audit: dict) -> str:
     contact     = audit.get("contact_details", {})
     cex         = audit.get("customer_expectations", {})
     btype       = audit.get("business_type", "default")
-    btype_label = BTYPE_LABELS.get(btype, "Local Business")
-    psi         = audit.get("psi", {})
-
-    ov_color, ov_bg, ov_label = _score_color(overall)
-    critical_n = len([i for i in issues if i["severity"] == "critical"])
-    medium_n   = len([i for i in issues if i["severity"] == "medium"])
-    https_ok   = audit.get("is_https", False)
-    rt         = audit.get("response_time", "?")
-
-    # Pre-build all sections
-    summary_section = _section("🧠", "Executive Summary",
-        '<div style="font-size:14px;color:#374151;line-height:1.85;background:#f9fafb;'
-        'border-left:4px solid #0f1117;padding:16px 20px;border-radius:0 8px 8px 0">'
-        + summary + '</div>'
-    )
-
-    cex_html = _build_customer_expectations(cex, btype_label)
-    cex_section = _section("😱", btype_label + " Customer Intelligence — What Your Customers Look For", cex_html) if cex_html else ""
-
-    score_cards = _build_score_cards(scores)
-    psi_block   = _build_psi(psi)
-    score_section = _section("📊", "Score Breakdown by Category", score_cards + psi_block)
-
-    contact_section = _section("📞", "Contact & Lead Capture Health", _build_contact_grid(contact))
-
-    issues_count  = len(issues[:14])
-    issues_section = _section(
-        "🚨", "Issues Found — " + str(issues_count) + " Items",
-        _build_issues(issues)
-    )
-
-    positives_section = _section("✅", "What's Already Working", _build_positives(positives))
-
-    services_section = _section(
-        "🛠️", "How " + AGENCY + " Can Fix This — Services Matched to This Site",
-        _build_services_table(services, AGENCY)
-    )
-
-    email_section = _section("✉️", "Suggested Outreach Email",
-        '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:22px 24px">'
-        '<div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;'
-        'letter-spacing:.08em;margin-bottom:12px">&#9993; Personalised for ' + biz + ' (' + btype_label + ')</div>'
-        '<hr style="border:none;border-top:1px dashed #e5e7eb;margin-bottom:14px">'
-        '<div style="font-size:13.5px;color:#374151;line-height:1.85;white-space:pre-line">'
-        + email_text + '</div>'
-        '</div>'
-    )
-
-    # HTTPS badge
-    https_color = "#16a34a" if https_ok else "#dc2626"
-    https_bg    = "#f0fdf4" if https_ok else "#fee2e2"
-    https_text  = "&#10003; HTTPS" if https_ok else "&#10007; No SSL"
-
-
-def generate_report(audit: dict) -> str:
-    date_str    = datetime.now().strftime("%-d %B %Y")
-    overall     = audit["overall_score"]
-    domain      = audit["domain"]
-    biz         = audit["business_name"]
-    url         = audit["url"]
-    scores      = audit["scores"]
-    issues      = audit["all_issues"]
-    positives   = audit.get("all_positives", [])
-    services    = audit.get("recommended_services", [])
-    summary     = audit.get("ai_summary", "")
-    email_text  = audit.get("outreach_email", "")
-    contact     = audit.get("contact_details", {})
-    cex         = audit.get("customer_expectations", {})
-    btype       = audit.get("business_type", "default")
-    btype_label = BTYPE_LABELS.get(btype, "Local Business")
+    # business_type is now free-text (e.g. "Pharmacy"); fall back to the legacy
+    # label map only for old hardcoded keys, else use the string as-is.
+    btype_label = BTYPE_LABELS.get(btype) or (btype.title() if btype and btype != "default" else "Local Business")
     psi         = audit.get("psi", {})
 
     ov_color, _, ov_label = _score_color(overall)
