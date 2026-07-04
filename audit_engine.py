@@ -74,7 +74,22 @@ def _fetch_with_browser(url: str) -> dict:
                 except Exception:
                     pass
 
-        elapsed = round(time.time() - start, 2)
+        # Real page load time as measured BY THE BROWSER (Navigation Timing API).
+        # This is the network response time of the audited site — it excludes our
+        # Chromium start-up and subpage fetches, which the wall-clock would wrongly
+        # include (that bug reported e.g. 63s on a slow free host for a fast site).
+        elapsed = round(time.time() - start, 2)  # fallback only
+        try:
+            timing = page.evaluate(
+                "() => { const n = performance.getEntriesByType('navigation')[0];"
+                " return n ? {resp: n.responseEnd, dcl: n.domContentLoadedEventEnd} : null; }"
+            )
+            if timing and timing.get("resp", 0) > 0:
+                # responseEnd = time to receive the HTML; cap protects against noise.
+                elapsed = round(min(timing["resp"] / 1000.0, elapsed), 2)
+        except Exception:
+            pass
+
         final_url = page.url
         status = resp.status if resp else 200
         headers = {k.lower(): v for k, v in (resp.headers.items() if resp else [])}
