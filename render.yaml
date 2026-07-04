@@ -1,0 +1,15 @@
+# Render Blueprint. The key line is `runtime: docker` — Playwright/Chromium
+# needs the Dockerfile to install the browser + system libraries. A native
+# Python environment will NOT have Chromium and the audit falls back to the
+# (Cloudflare-blocked) requests path.
+services:
+  - type: web
+    name: website-auditor
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard          # 2GB RAM. Chromium can OOM on the 512MB starter plan.
+    envVars:
+      - key: GEMINI_API_KEY   # optional — audit is fully accurate without it
+        sync: false
+      - key: AGENCY_NAME
+        value: Ryotech
