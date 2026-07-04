@@ -21,54 +21,9 @@ PSI_API_KEY = os.getenv("PSI_API_KEY", "")
 
 # ─── BUSINESS TYPE DETECTION ─────────────────────────────────────────────────
 
-BUSINESS_TYPES = {
-    "gym": ["gym", "fitness", "jiu-jitsu", "jiujitsu", "martial arts", "boxing", "crossfit", "yoga", "pilates", "workout", "personal trainer", "bjj", "mma", "kickboxing", "karate", "wrestling"],
-    "restaurant": ["restaurant", "cafe", "diner", "bistro", "pizza", "sushi", "burger", "menu", "dining", "eatery", "food", "cuisine", "takeaway", "takeout", "delivery", "reservation", "reservations"],
-    "plumber": ["plumb", "plumber", "drain", "pipe", "leak", "hot water", "blocked", "sewer", "gas fitting", "gasfitting", "water heater", "tap", "toilet", "bathroom renovation"],
-    "dentist": ["dental", "dentist", "teeth", "orthodont", "braces", "implant", "whitening", "crown", "root canal", "gum", "smile", "oral", "invisalign", "checkup"],
-    "salon": ["hair", "salon", "beauty", "nails", "manicure", "pedicure", "wax", "colour", "color", "haircut", "stylist", "blowout", "lash", "brow", "spa", "barber", "barbershop", "barbers", "shave", "fade", "trim", "grooming"],
-    "lawyer": ["law", "legal", "attorney", "solicitor", "barrister", "lawyer", "litigation", "counsel", "firm", "injury", "divorce", "criminal", "property law"],
-    "real_estate": ["real estate", "realty", "property", "homes for sale", "rent", "lease", "agent", "apartment", "listings", "mortgage", "landlord"],
-    "medical": ["clinic", "doctor", "physician", "gp", "health", "medical", "surgery", "patient", "appointment", "specialist", "hospital", "urgent care", "telehealth"],
-    "accountant": ["accountant", "accounting", "tax return", "bookkeeping", "cpa", "financial planning", "payroll", "bas", "xero", "quickbooks", "tax agent", "chartered accountant"],
-    "tradie": ["electrician", "electric", "carpenter", "carpentry", "builder", "builder", "painting", "painter", "roof", "roofer", "tiler", "landscap", "garden", "cleaning", "cleaner", "pest control", "locksmith"],
-    "retail": ["shop", "store", "buy", "purchase", "product", "collection", "fashion", "clothing", "shoes", "accessories", "jewellery", "jewelry", "gifts"],
-}
 
 
 
-def detect_business_type(soup: BeautifulSoup, url: str) -> tuple:
-    """Returns (business_type, is_confident).
-    is_confident=False means we could not clearly identify the business from the page.
-    """
-    # Use more signals: visible text + title + meta description + h1/h2 + url
-    title_tag = soup.find("title")
-    meta_desc = soup.find("meta", attrs={"name": "description"})
-    headings   = " ".join(t.get_text(" ", strip=True) for t in soup.find_all(["h1","h2","h3"]))
-    title_text = title_tag.get_text(" ", strip=True) if title_tag else ""
-    meta_text  = meta_desc.get("content", "") if meta_desc else ""
-
-    # Weight headings + title + meta more than body (multiply by 3)
-    rich_text  = (title_text + " " + meta_text + " " + headings).lower() * 3
-    body_text  = soup.get_text(" ", strip=True).lower()
-    full_text  = rich_text + " " + body_text + " " + url.lower()
-
-    scores = {btype: 0 for btype in BUSINESS_TYPES}
-    for btype, keywords in BUSINESS_TYPES.items():
-        for kw in keywords:
-            if kw in full_text:
-                scores[btype] += 1
-
-    best       = max(scores, key=scores.get)
-    best_score = scores[best]
-
-    # Require at least 3 keyword matches for confident detection
-    if best_score >= 3:
-        print(f"[Audit] Business type detected: {best} (confidence: {best_score})")
-        return best, True
-    else:
-        print(f"[Audit] Business type unclear (best={best}, score={best_score}) — flagging as issue")
-        return "default", False
 
 
 
@@ -668,12 +623,11 @@ def run_audit(url: str) -> dict:
 
     full_html = fetch.get("full_html", fetch["html"])  # homepage + contact/about pages
     soup = BeautifulSoup(fetch["html"], "lxml")
-    btype, btype_confident = detect_business_type(soup, url)
 
     seo      = analyze_seo(soup, url)
-    contact  = analyze_contact(soup, btype, raw_html=full_html)   # pass raw html
-    cta      = analyze_cta(soup, btype)
-    trust    = analyze_trust(soup, btype, raw_html=full_html)     # pass raw html
+    contact  = analyze_contact(soup, "default", raw_html=full_html)   # pass raw html
+    cta      = analyze_cta(soup, "default")
+    trust    = analyze_trust(soup, "default", raw_html=full_html)     # pass raw html
     security = analyze_security(fetch, soup)
     perf     = analyze_performance(fetch, soup)
     mobile   = analyze_mobile(soup, fetch)
@@ -702,15 +656,6 @@ def run_audit(url: str) -> dict:
             all_issues.append({**issue, "category": cat})
     all_issues.sort(key=lambda x: sev_order.get(x["severity"], 9))
 
-    # If we couldn't identify the business type, flag it as a real SEO/branding issue
-    if not btype_confident:
-        all_issues.insert(0, {
-            "issue": "Website does not clearly communicate what this business does",
-            "severity": "critical",
-            "category": "Branding & Identity",
-            "fix": "Add a clear, specific headline on the homepage that states exactly what this business does, who it serves, and where it operates. Visitors (and Google) should understand the business within 3 seconds of landing.",
-            "business_impact": "If a visitor can't tell what you do within 3 seconds, they leave — permanently. Unclear positioning is one of the top reasons small business websites fail to convert traffic into customers. Google also ranks pages lower when it can't determine what topic or service a page is about."
-        })
 
     # Collect positives across all
     all_positives = []
@@ -722,7 +667,7 @@ def run_audit(url: str) -> dict:
 
     return {
         "url": fetch["final_url"], "domain": domain, "business_name": biz_name,
-        "business_type": btype, "overall_score": overall,
+"overall_score": overall,
         "is_https": fetch["is_https"], "response_time": fetch["response_time"],
         "page_size_kb": fetch["page_size_kb"],
         "scores": {
@@ -737,7 +682,6 @@ def run_audit(url: str) -> dict:
         "all_issues": all_issues,
         "all_positives": all_positives,
         "psi": psi,
-        "customer_expectations": check_customer_expectations(soup, btype, html_text=fetch["html"]) if btype_confident else {},
     }
 
 
