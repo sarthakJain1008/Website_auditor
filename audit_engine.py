@@ -38,8 +38,12 @@ def _fetch_with_browser(url: str) -> dict:
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
+            # Memory-lean flags so a single Chromium fits on small (512MB) hosts.
             args=["--no-sandbox", "--disable-dev-shm-usage",
-                  "--disable-blink-features=AutomationControlled"],
+                  "--disable-blink-features=AutomationControlled",
+                  "--disable-gpu", "--disable-extensions",
+                  "--disable-background-networking", "--disable-features=site-per-process",
+                  "--js-flags=--max-old-space-size=256"],
         )
         ctx = browser.new_context(user_agent=_DESKTOP_UA,
                                   viewport={"width": 1366, "height": 900},

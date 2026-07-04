@@ -7,7 +7,9 @@ services:
     name: website-auditor
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: standard          # 2GB RAM. Chromium can OOM on the 512MB starter plan.
+    plan: free              # 512MB, no card needed. Chromium is memory-tuned in
+                            # audit_engine, but may still OOM under load — if you
+                            # hit 502s while auditing, bump this to `starter`/`standard`.
     envVars:
       - key: GEMINI_API_KEY   # optional — audit is fully accurate without it
         sync: false
