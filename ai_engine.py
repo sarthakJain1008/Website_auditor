@@ -69,32 +69,49 @@ def _clean_html_for_ai(raw_html: str, max_chars: int = 18000) -> str:
 # Deterministic classifier from title/meta/visible text. Used always; the AI
 # overlay can refine it to a more exact label when a key is present.
 
+# Ordered most-specific first. Keywords are matched on WORD BOUNDARIES so short
+# tokens can't false-match inside other words (e.g. "spa" must not hit "space").
+# Title/meta are weighted heavily; a hit there is more reliable than body text.
 _BTYPE_KEYWORDS = [
+    ("Gym / Fitness Studio", ["jiu jitsu", "jiu-jitsu", "martial arts", "brazilian jiu",
+                              "bjj", "mma", "kickbox", "boxing gym", "crossfit", "gym",
+                              "fitness", "personal trainer", "yoga studio", "pilates"]),
     ("Pharmacy", ["pharmacy", "chemist", "prescription", "gphc", "dispensing"]),
-    ("Dental Practice", ["dentist", "dental", "orthodont", "teeth whitening"]),
-    ("Medical Clinic", ["clinic", "gp surgery", "doctor", "medical centre", "physio"]),
-    ("Law Firm", ["solicitor", "law firm", "lawyer", "conveyancing", "legal advice"]),
+    ("Dental Practice", ["dentist", "dental", "orthodontist", "teeth whitening"]),
+    ("Veterinary Practice", ["veterinary", "veterinarian", "animal hospital"]),
+    ("Medical Clinic", ["gp surgery", "medical centre", "medical center", "physiotherapy",
+                        "physio clinic", "health clinic"]),
+    ("Law Firm", ["solicitor", "law firm", "lawyer", "conveyancing", "legal advice", "attorney"]),
     ("Accounting Firm", ["accountant", "accounting", "bookkeeping", "tax return"]),
     ("Plumbing Business", ["plumber", "plumbing", "boiler", "heating engineer", "drainage"]),
-    ("Electrician", ["electrician", "electrical", "rewire", "fuse box"]),
-    ("Roofing / Trade", ["roofer", "roofing", "builder", "construction", "landscaping"]),
-    ("Hair & Beauty Salon", ["salon", "barber", "hairdress", "beauty", "nails", "spa"]),
-    ("Gym / Fitness Studio", ["gym", "fitness", "personal train", "jiu jitsu", "martial art", "yoga", "pilates"]),
-    ("Restaurant / Café", ["restaurant", "cafe", "café", "bistro", "takeaway", "menu", "book a table"]),
-    ("Estate Agency", ["estate agent", "letting", "property for sale", "real estate"]),
-    ("Veterinary Practice", ["veterinary", "vet ", "animal hospital"]),
-    ("Automotive / Garage", ["garage", "mot", "car repair", "servicing", "mechanic", "tyres"]),
-    ("Cleaning Service", ["cleaning", "cleaner", "carpet clean", "domestic clean"]),
-    ("Retail Store", ["shop", "store", "boutique", "add to cart", "buy now"]),
+    ("Electrician", ["electrician", "electrical contractor", "rewire", "fuse box"]),
+    ("Roofing / Trade", ["roofer", "roofing", "builder", "bricklayer", "landscaping", "scaffolding"]),
+    ("Hair & Beauty Salon", ["hair salon", "barber", "barbershop", "hairdresser", "hairdressing",
+                             "beauty salon", "nail salon", "day spa", "beauty clinic"]),
+    ("Restaurant / Café", ["restaurant", "bistro", "brasserie", "takeaway", "book a table",
+                           "our menu", "café", "coffee shop"]),
+    ("Estate Agency", ["estate agent", "lettings", "property for sale", "real estate"]),
+    ("Automotive / Garage", ["mot test", "car repair", "car servicing", "mechanic", "tyres", "auto repair"]),
+    ("Cleaning Service", ["cleaning service", "carpet cleaning", "domestic cleaning", "office cleaning"]),
+    ("Retail Store", ["boutique", "add to cart", "add to basket", "online store", "free shipping"]),
 ]
 
 
+def _kw_hit(hay: str, kw: str) -> bool:
+    # Word-boundary match that also allows a trailing plural 's'
+    # ("restaurants" matches "restaurant") but not other letters ("space").
+    return re.search(r'(?<![a-z])' + re.escape(kw) + r's?(?![a-z])', hay) is not None
+
+
 def detect_business_type(title: str, meta: str, text: str = "") -> str:
-    """Best-effort deterministic business type from page signals."""
-    hay = f"{title} {meta} {text}".lower()
-    for label, kws in _BTYPE_KEYWORDS:
-        if any(kw in hay for kw in kws):
-            return label
+    """Best-effort deterministic business type from page signals.
+    A hit in the title/meta wins over a hit deep in body text."""
+    strong = f"{title} {meta}".lower()   # title + meta description
+    weak = f"{title} {meta} {text}".lower()
+    for hay in (strong, weak):            # prefer strong signals first
+        for label, kws in _BTYPE_KEYWORDS:
+            if any(_kw_hit(hay, kw) for kw in kws):
+                return label
     return "Local Business"
 
 

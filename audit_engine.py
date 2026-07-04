@@ -8,7 +8,7 @@ import re
 import time
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from dotenv import load_dotenv
 import os
 
@@ -17,46 +17,161 @@ PSI_API_KEY = os.getenv("PSI_API_KEY", "")
 
 
 # ─── PAGE FETCH ─────────────────────────────────────────────────────────────
+# Primary: a REAL headless browser (Playwright/Chromium). This is essential —
+# many local-business sites sit behind Cloudflare/WAFs that serve a JS
+# "checking your browser" challenge to datacenter IPs. Plain requests can't run
+# that JS and receives a tiny useless shell, which makes every content check
+# read as "missing" (the false negatives we kept seeing). A real browser solves
+# the challenge AND renders JS-injected content (review widgets, dynamic footers).
+# Fallback: plain requests, used only if a browser/Chromium isn't available.
 
-def fetch_page(url: str) -> dict:
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
+_DESKTOP_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+_SUBPATHS = ["/contact", "/contact-us", "/about", "/about-us", "/enquiry"]
+
+
+def _fetch_with_browser(url: str) -> dict:
+    """Render with headless Chromium. Raises if Playwright/Chromium unavailable."""
+    from playwright.sync_api import sync_playwright
+
+    start = time.time()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage",
+                  "--disable-blink-features=AutomationControlled"],
+        )
+        ctx = browser.new_context(user_agent=_DESKTOP_UA,
+                                  viewport={"width": 1366, "height": 900},
+                                  locale="en-GB")
+        page = ctx.new_page()
+        resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass  # some sites never go idle; the DOM is already good enough
+
+        html = page.content()
+
+        # Follow a client-side redirect stub (window.location / meta refresh).
+        # Some sites serve a tiny "redirect to /lander" page as the homepage.
+        if len(html) < _MIN_USABLE_HTML:
+            m = (re.search(r"""window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]""", html) or
+                 re.search(r"""<meta[^>]+http-equiv=['"]?refresh['"]?[^>]*url=([^'">\s]+)""", html, re.I))
+            if m:
+                try:
+                    page.goto(urljoin(page.url, m.group(1).strip()),
+                              wait_until="domcontentloaded", timeout=20000)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=8000)
+                    except Exception:
+                        pass
+                    html = page.content()
+                except Exception:
+                    pass
+
+        elapsed = round(time.time() - start, 2)
+        final_url = page.url
+        status = resp.status if resp else 200
+        headers = {k.lower(): v for k, v in (resp.headers.items() if resp else [])}
+        try:
+            body = resp.body() if resp else b""
+            size_kb = round(len(body) / 1024, 1) if body else round(len(html.encode()) / 1024, 1)
+        except Exception:
+            size_kb = round(len(html.encode()) / 1024, 1)
+
+        # Pull a few key subpages so contact/trust info living off the homepage
+        # (e.g. /contact, /enquiry) is still seen. Rendered, so JS content counts.
+        base = final_url.rstrip("/")
+        extra_html = ""
+        for path in _SUBPATHS:
+            try:
+                page.goto(base + path, wait_until="domcontentloaded", timeout=12000)
+                sub = page.content()
+                if sub and len(sub) > 800:
+                    extra_html += " " + sub
+            except Exception:
+                pass
+        browser.close()
+
+    return {
+        "html": html,
+        "extra_html": extra_html,
+        "full_html": html + extra_html,
+        "status_code": status,
+        "response_time": elapsed,
+        "final_url": final_url,
+        "is_https": final_url.startswith("https://"),
+        "headers": headers,
+        "page_size_kb": size_kb,
+        "fetch_method": "browser",
+        "error": None,
+    }
+
+
+def _fetch_with_requests(url: str) -> dict:
+    """Plain HTTP fallback. Fine for simple sites; blocked by JS-challenge WAFs."""
     start = time.time()
     headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "User-Agent": _DESKTOP_UA,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Language": "en-GB,en;q=0.9",
     }
     try:
         r = requests.get(url, timeout=15, headers=headers, allow_redirects=True)
         elapsed = round(time.time() - start, 2)
-        html = r.text
-
         base = r.url.rstrip("/")
         extra_html = ""
-        for path in ["/contact", "/contact-us", "/about", "/about-us", "/enquiry", "/support"]:
+        for path in _SUBPATHS:
             try:
                 sub = requests.get(base + path, timeout=8, headers=headers, allow_redirects=True)
                 if sub.status_code == 200 and len(sub.text) > 500:
                     extra_html += " " + sub.text
             except Exception:
                 pass
-
         return {
-            "html": html,
-            "extra_html": extra_html,
-            "full_html": html + extra_html,
-            "status_code": r.status_code,
-            "response_time": elapsed, "final_url": r.url,
-            "is_https": r.url.startswith("https://"),
-            "headers": dict(r.headers),
-            "page_size_kb": round(len(r.content) / 1024, 1),
-            "error": None
+            "html": r.text, "extra_html": extra_html, "full_html": r.text + extra_html,
+            "status_code": r.status_code, "response_time": elapsed, "final_url": r.url,
+            "is_https": r.url.startswith("https://"), "headers": {k.lower(): v for k, v in r.headers.items()},
+            "page_size_kb": round(len(r.content) / 1024, 1), "fetch_method": "requests", "error": None,
         }
     except Exception as e:
         return {"html": "", "extra_html": "", "full_html": "", "error": str(e),
                 "is_https": False, "response_time": 0, "final_url": url,
-                "headers": {}, "page_size_kb": 0, "status_code": 0}
+                "headers": {}, "page_size_kb": 0, "status_code": 0, "fetch_method": "requests"}
+
+
+_MIN_USABLE_HTML = 2000  # bytes; below this the fetch likely failed / was blocked
+
+
+def fetch_page(url: str) -> dict:
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    # Prefer the real browser; fall back to requests if it can't run OR if it
+    # comes back suspiciously small (broken/blocked render). Keep whichever
+    # result actually has content so we never trust an empty shell.
+    browser_result = None
+    try:
+        # Run the sync Playwright call in a dedicated worker thread. Streamlit
+        # runs the script in a context that may hold an asyncio loop, which the
+        # sync API refuses to run inside; a fresh thread has no loop, so it works.
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            browser_result = ex.submit(_fetch_with_browser, url).result()
+        print(f"[fetch] browser render — {browser_result['page_size_kb']}KB in {browser_result['response_time']}s")
+    except Exception as e:
+        print(f"[fetch] browser unavailable ({e}); using requests")
+
+    if browser_result and len(browser_result.get("html", "")) >= _MIN_USABLE_HTML:
+        return browser_result
+
+    req_result = _fetch_with_requests(url)
+    candidates = [r for r in (browser_result, req_result) if r and r.get("html")]
+    if not candidates:
+        return req_result  # carries the real error message
+    # Whichever fetch actually captured more real content wins.
+    return max(candidates, key=lambda r: len(r["html"]))
 
 
 # ─── CONTACT ANALYSIS (regex baseline) ──────────────────────────────────────
@@ -266,17 +381,24 @@ def analyze_trust(soup: BeautifulSoup, raw_html: str = "") -> dict:
     html_text = soup.get_text(" ", strip=True).lower()
     raw = (raw_html if raw_html else str(soup)).lower()
 
-    # Reviews / testimonials
-    review_keywords = ["testimonial", "review", "what our", "what clients", "what customers",
-                       "5 star", "five star", "our clients say", "they say", "feedback",
-                       "verified review", "happy customer", "satisfied", "recommend",
-                       "rated", "star rating", "trustpilot", "google review", "yelp"]
+    # Reviews / testimonials — use STRONG signals only. Bare words like "review",
+    # "rated", "recommend", "feedback" are too noisy (they appear in nav links,
+    # policies, marketing copy) and caused false positives, so they're excluded.
     review_platforms = ["trustpilot", "elfsight", "reviews.io", "grade.us", "birdeye",
                         "podium", "widewail", "reviewsig", "stamped", "yotpo",
-                        "feefo", "judge.me", "loox", "okendo"]
-    has_reviews = any(kw in html_text for kw in review_keywords)
+                        "feefo", "judge.me", "loox", "okendo", "trustindex", "reputon"]
+    review_signals = review_platforms + [
+        "testimonial", "customer review", "our reviews", "read our reviews",
+        "client reviews", "patient reviews", "google review", "verified review",
+        "5 star", "5-star", "five star", "star rating", "what our customers",
+        "what our clients", "what our patients", "customers say", "clients say",
+        "patients say", "happy customers", "aggregaterating", "ratingvalue", "reviewcount",
+    ]
+    has_reviews = any(kw in html_text for kw in review_signals) or \
+                  any(kw in raw for kw in review_signals)
+    # "…based on 1,240 reviews" style counts are a reliable review-section signal.
     if not has_reviews:
-        has_reviews = any(kw in raw for kw in review_platforms + review_keywords)
+        has_reviews = bool(re.search(r'\b\d[\d,]{1,}\+?\s*reviews\b', raw))
     if has_reviews:
         score += 30; positives.append("Testimonials or reviews section found")
     else:
@@ -285,7 +407,13 @@ def analyze_trust(soup: BeautifulSoup, raw_html: str = "") -> dict:
                        "impact_key": "no_reviews"})
 
     # Google Reviews
-    has_google_review = bool(re.search(r'google\.com/maps|maps\.google|g\.page|google.*review|place_id|g\.co/maps', raw))
+    # Precise Google-Reviews signals only. The old `google.*review` wildcard
+    # matched "google" (analytics/fonts) …anywhere… "review" across minified
+    # HTML, producing false positives. Require an actual reviews link/widget.
+    has_google_review = bool(re.search(
+        r'g\.page/|/maps/place/|google\.com/maps/place|maps\.app\.goo\.gl|'
+        r'place_id=|data-google-reviews|google-reviews|"google review|google\s+reviews',
+        raw))
     if has_google_review:
         score += 25; positives.append("Google Reviews reference found")
     else:
@@ -643,12 +771,30 @@ def _merge_ai_results(regex_result: dict, ai_result: dict, category: str) -> dic
 
 # ─── MASTER RUNNER ───────────────────────────────────────────────────────────
 
+_PARKING_SIGNS = ["forsale", "godaddy.com/forsale", "sedoparking", "parkingcrew",
+                  "bodis.com", "afternic", "hugedomains", "domain for sale",
+                  "buy this domain", "domain is for sale", "access denied",
+                  "this domain may be for sale"]
+
+
+def _looks_parked_or_dead(fetch: dict) -> bool:
+    """True if the fetch is too thin to be a real site, or is a parking/for-sale page."""
+    html = fetch.get("html", "") or ""
+    if len(html) < 1000:  # a real business homepage is never this small
+        return True
+    blob = (fetch.get("final_url", "") + " " + html[:3000]).lower()
+    return any(sign in blob for sign in _PARKING_SIGNS)
+
+
 def run_audit(url: str) -> dict:
     """Run the full website audit — regex baseline + AI enhancement."""
     print(f"[Audit] Fetching: {url}")
     fetch = fetch_page(url)
     if fetch.get("error"):
         return {"error": fetch["error"], "url": url}
+    if _looks_parked_or_dead(fetch):
+        return {"error": ("This site could not be loaded for a real audit — it looks offline, "
+                          "parked, for sale, or is blocking automated access."), "url": url}
 
     full_html = fetch.get("full_html", fetch["html"])
     soup = BeautifulSoup(fetch["html"], "lxml")
