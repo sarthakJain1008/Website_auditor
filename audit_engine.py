@@ -166,10 +166,10 @@ def fetch_page(url: str) -> dict:
         elapsed = round(time.time() - start, 2)
         html = r.text
 
-        # Also fetch /contact and /about pages for more signal (phone, email, address often only there)
+        # Also fetch contact/about pages for more signal (phone, email, address often only there)
         base = r.url.rstrip("/")
         extra_html = ""
-        for path in ["/contact", "/contact-us", "/about", "/about-us"]:
+        for path in ["/contact", "/contact-us", "/about", "/about-us", "/enquiry", "/support"]:
             try:
                 sub = requests.get(base + path, timeout=8, headers=headers, allow_redirects=True)
                 if sub.status_code == 200 and len(sub.text) > 500:
@@ -347,6 +347,10 @@ def analyze_contact(soup: BeautifulSoup, btype: str, raw_html: str = "") -> dict
     emails = list(set(emails_in_text + mailto_hrefs + emails_in_raw))
     # Remove obvious non-contact emails (CDN domains, w3.org etc)
     emails = [e for e in emails if not any(d in e for d in ['w3.org', 'schema.org', 'example.com', 'sentry.io', 'amazonaws'])]
+
+    # Handle Cloudflare Email Protection which hides emails from raw HTML
+    if "__cf_email__" in raw or "email-protection" in raw:
+        emails.append("cloudflare-protected-email@found.com")
 
     if emails:
         score += 15; positives.append("Email address found")
