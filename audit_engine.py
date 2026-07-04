@@ -1,12 +1,7 @@
 """
-audit_engine.py — Complete rebuild.
-Business logic: Score from ZERO (additive model), detect business type,
-generate personalized impact statements per issue.
-Research findings applied:
-- 53% mobile users leave if > 3s load
-- 70% small biz have no effective CTA
-- 61% won't return after bad mobile experience
-- 7% conversion drop per second of delay
+audit_engine.py — AI-first website auditor.
+Contact, CTA, and Trust analysis are done by Gemini AI (see ai_engine.py).
+Python handles: SEO tags, security headers, performance timing, mobile viewport.
 """
 import re
 import time
@@ -18,17 +13,6 @@ import os
 
 load_dotenv()
 PSI_API_KEY = os.getenv("PSI_API_KEY", "")
-
-# ─── BUSINESS TYPE DETECTION ─────────────────────────────────────────────────
-
-
-
-
-
-
-
-def get_impact(btype: str, issue_key: str) -> str:
-    return ""
 
 
 # ─── PAGE FETCH ─────────────────────────────────────────────────────────────
@@ -47,7 +31,7 @@ def fetch_page(url: str) -> dict:
         elapsed = round(time.time() - start, 2)
         html = r.text
 
-        # Also fetch contact/about pages for more signal (phone, email, address often only there)
+        # Also fetch contact/about pages for more signal
         base = r.url.rstrip("/")
         extra_html = ""
         for path in ["/contact", "/contact-us", "/about", "/about-us", "/enquiry", "/support"]:
@@ -60,8 +44,8 @@ def fetch_page(url: str) -> dict:
 
         return {
             "html": html,
-            "extra_html": extra_html,   # contact/about pages
-            "full_html": html + extra_html,  # all pages combined
+            "extra_html": extra_html,
+            "full_html": html + extra_html,
             "status_code": r.status_code,
             "response_time": elapsed, "final_url": r.url,
             "is_https": r.url.startswith("https://"),
@@ -75,13 +59,11 @@ def fetch_page(url: str) -> dict:
                 "headers": {}, "page_size_kb": 0, "status_code": 0}
 
 
-# ─── ADDITIVE SCORING MODEL ─────────────────────────────────────────────────
-# Starts from 0, earns points for each thing done RIGHT.
-# This naturally differentiates good sites (many points) from bad ones (few points).
+# ─── PYTHON-BASED CHECKS (things code is better at) ─────────────────────────
 
 def analyze_seo(soup: BeautifulSoup, url: str) -> dict:
     issues, positives = [], []
-    score = 0  # ADDITIVE from 0
+    score = 0
 
     # Title (max 20 pts)
     title_tag = soup.find("title")
@@ -91,7 +73,7 @@ def analyze_seo(soup: BeautifulSoup, url: str) -> dict:
     elif title:
         score += 10
         issues.append({"severity": "medium", "issue": f"Page title is {len(title)} chars — outside the 10–60 range Google recommends",
-                       "fix": "Rewrite the title tag to clearly describe the business in 10–60 characters. This directly affects your Google search listing.", "impact_key": "seo_title"})
+                       "fix": "Rewrite the title tag to clearly describe the business in 10–60 characters.", "impact_key": "seo_title"})
     else:
         issues.append({"severity": "critical", "issue": "No page title found — you are invisible in Google search results",
                        "fix": "Add a <title> tag immediately. Without it, Google won't rank your page meaningfully.", "impact_key": "seo_title"})
@@ -104,10 +86,10 @@ def analyze_seo(soup: BeautifulSoup, url: str) -> dict:
     elif desc:
         score += 7
         issues.append({"severity": "low", "issue": f"Meta description is {len(desc)} chars — should be 80–160 for best Google display",
-                       "fix": "Rewrite your meta description to 120–155 characters. This is the text that appears under your link in Google.", "impact_key": "seo_meta"})
+                       "fix": "Rewrite your meta description to 120–155 characters.", "impact_key": "seo_meta"})
     else:
         issues.append({"severity": "medium", "issue": "Missing meta description — Google writes one for you (usually badly)",
-                       "fix": "Add a compelling 120–155 character meta description. It's the first thing people read before clicking your Google listing.", "impact_key": "seo_meta"})
+                       "fix": "Add a compelling 120–155 character meta description.", "impact_key": "seo_meta"})
 
     # H1 (max 15 pts)
     h1s = soup.find_all("h1")
@@ -119,7 +101,7 @@ def analyze_seo(soup: BeautifulSoup, url: str) -> dict:
                        "fix": "Keep one H1 that describes the page. Convert extras to H2 or H3.", "impact_key": "seo_h1"})
     else:
         issues.append({"severity": "critical", "issue": "No H1 heading — Google has no clear signal about what your page is about",
-                       "fix": "Add one H1 heading that clearly states your main service or product. This is a fundamental SEO requirement.", "impact_key": "seo_h1"})
+                       "fix": "Add one H1 heading that clearly states your main service or product.", "impact_key": "seo_h1"})
 
     # Images alt (max 10 pts)
     all_imgs = soup.find_all("img")
@@ -129,22 +111,22 @@ def analyze_seo(soup: BeautifulSoup, url: str) -> dict:
     elif no_alt:
         score += max(0, 10 - len(no_alt) * 2)
         issues.append({"severity": "medium", "issue": f"{len(no_alt)} of {len(all_imgs)} images missing alt text",
-                       "fix": "Add descriptive alt text to every image. Google uses this to understand your images — it impacts both search and accessibility.", "impact_key": "seo_images"})
+                       "fix": "Add descriptive alt text to every image.", "impact_key": "seo_images"})
 
     # Canonical (max 5 pts)
     if soup.find("link", rel="canonical"):
         score += 5; positives.append("Canonical tag present")
     else:
         issues.append({"severity": "low", "issue": "No canonical tag — risk of duplicate content penalties",
-                       "fix": "Add a canonical URL tag. This tells Google which version of your URL is the 'real' one and prevents ranking splits.", "impact_key": "seo_canonical"})
+                       "fix": "Add a canonical URL tag.", "impact_key": "seo_canonical"})
 
-    # Structured data / Schema (max 10 pts)
+    # Structured data (max 10 pts)
     schema = soup.find("script", type="application/ld+json")
     if schema:
         score += 10; positives.append("Structured data (Schema) present")
     else:
         issues.append({"severity": "medium", "issue": "No structured data (Schema.org) — missing rich results eligibility",
-                       "fix": "Add LocalBusiness JSON-LD schema. This gives Google your business name, address, hours, and type — enabling rich results and map pack visibility.", "impact_key": "no_schema"})
+                       "fix": "Add LocalBusiness JSON-LD schema.", "impact_key": "no_schema"})
 
     # OG tags (max 5 pts)
     og_title = soup.find("meta", property="og:title")
@@ -152,305 +134,25 @@ def analyze_seo(soup: BeautifulSoup, url: str) -> dict:
         score += 5; positives.append("Open Graph tags present")
     else:
         issues.append({"severity": "low", "issue": "Missing Open Graph tags — poor social media sharing appearance",
-                       "fix": "Add og:title, og:description, and og:image tags. These control how your page looks when shared on Facebook, LinkedIn, and iMessage.", "impact_key": "seo_og"})
+                       "fix": "Add og:title, og:description, and og:image tags.", "impact_key": "seo_og"})
 
     return {"score": min(score, 100), "issues": issues, "positives": positives,
             "title": title, "meta_description": desc, "h1_count": len(h1s)}
-
-
-def analyze_contact(soup: BeautifulSoup, btype: str, raw_html: str = "") -> dict:
-    """Detect contact info from visible text, href attributes, AND raw HTML (catches JS-rendered content)."""
-    issues, positives = [], []
-    score = 0
-
-    # Strip noise from soup for clean text extraction
-    clean_soup = BeautifulSoup(str(soup), 'lxml')
-    for tag in clean_soup(['script', 'style', 'svg', 'path', 'noscript']):
-        tag.decompose()
-    html_text = clean_soup.get_text(" ", strip=True)
-
-    # Raw HTML string scan catches JS-rendered & obfuscated content
-    raw = raw_html if raw_html else str(soup)
-
-    phone_pattern = re.compile(r'(\+?[\d][\d\s\(\)\-\.]{7,}[\d])')
-    email_pattern = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
-
-    # ── tel: links — checks both soup and raw HTML ───────────────────────────────
-    tel_links = soup.find_all("a", href=re.compile(r"tel:", re.I))
-    # Also find tel: in raw HTML string (catches dynamically injected links)
-    tel_in_raw = re.findall(r'href=["\']tel:([+\d\s\-\.\(\)]{6,})["\']', raw, re.I)
-    tel_hrefs = list(set(
-        [a.get('href', '').replace('tel:', '').strip() for a in tel_links] + tel_in_raw
-    ))
-
-    # ── mailto: links ────────────────────────────────────────────────────────────
-    mailto_links = soup.find_all("a", href=re.compile(r"mailto:", re.I))
-    # Also find mailto: in raw HTML
-    mailto_in_raw = re.findall(r'href=["\']mailto:([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)', raw, re.I)
-    mailto_hrefs = list(set(
-        [a.get('href', '').replace('mailto:', '').split('?')[0].strip() for a in mailto_links]
-        + mailto_in_raw
-    ))
-
-    # ── Phone: visible text + tel: links + raw HTML scan ────────────────────────
-    phones_in_text = [p for p in phone_pattern.findall(html_text) if len(re.sub(r'\D', '', p)) >= 7]
-    # Scan raw HTML for any phone patterns in data attributes, JSON, scripts
-    phones_in_raw  = [p for p in phone_pattern.findall(raw) if len(re.sub(r'\D', '', p)) >= 7
-                      and len(re.sub(r'\D', '', p)) <= 15]  # max 15 digits to avoid version numbers
-    phones = list(set(phones_in_text + tel_hrefs + phones_in_raw))
-    # Filter: remove strings that look like dates/versions (e.g. 2024-01-01)
-    phones = [p for p in phones if not re.match(r'^20\d\d', p.strip())]
-
-    if phones:
-        score += 30; positives.append("Phone number found")
-    else:
-        issues.append({"severity": "critical",
-                       "issue": "No phone number found on the page",
-                       "fix": "Add your phone number to the header AND footer. Make it a clickable tel: link for mobile users.",
-                       "impact_key": "no_phone",
-                       "business_impact": get_impact(btype, "no_phone")})
-
-    # Clickable tel: link
-    if tel_links or tel_in_raw:
-        score += 10; positives.append("Phone is clickable (tel: link)")
-    elif phones:
-        issues.append({"severity": "medium",
-                       "issue": "Phone number exists but is NOT clickable on mobile",
-                       "fix": "Wrap your phone number in <a href='tel:+1...'> so mobile visitors can tap-to-call instantly.",
-                       "impact_key": "no_tel_link",
-                       "business_impact": "Mobile users (60%+ of your traffic) can't tap your number to call. They have to manually type it — most won't bother."})
-
-    # ── Email: visible text + mailto: links + raw HTML scan ─────────────────────
-    emails_in_text = [e for e in email_pattern.findall(html_text)
-                      if not e.endswith((".png", ".jpg", ".gif", ".svg", ".css", ".js"))]
-    emails_in_raw  = [e for e in email_pattern.findall(raw)
-                      if not e.endswith((".png", ".jpg", ".gif", ".svg", ".css", ".js", ".woff", ".ttf"))]
-    emails = list(set(emails_in_text + mailto_hrefs + emails_in_raw))
-    # Remove obvious non-contact emails (CDN domains, w3.org etc)
-    emails = [e for e in emails if not any(d in e for d in ['w3.org', 'schema.org', 'example.com', 'sentry.io', 'amazonaws'])]
-
-    # Handle Cloudflare Email Protection which hides emails from raw HTML
-    if "__cf_email__" in raw or "email-protection" in raw:
-        emails.append("cloudflare-protected-email@found.com")
-
-    if emails:
-        score += 15; positives.append("Email address found")
-    else:
-        issues.append({"severity": "medium",
-                       "issue": "No email address visible on the site",
-                       "fix": "Add a contact email address. Use a professional domain email (you@yourbusiness.com) not Gmail or Hotmail.",
-                       "impact_key": "no_email",
-                       "business_impact": get_impact(btype, "no_email")})
-
-    # ── Contact form: soup forms + raw HTML scan for embedded forms ──────────────
-    forms = soup.find_all("form")
-    form_kws = ["contact", "name", "message", "email", "enquir", "inquiry", "quote",
-                "book", "appointment", "input", "textarea", "submit"]
-    has_form = any(any(kw in str(f).lower() for kw in form_kws) for f in forms)
-    # Also check raw HTML for embedded form tools
-    form_platforms = ["typeform", "jotform", "wufoo", "formstack", "gravity", "wpforms",
-                      "contactform", "ninja-form", "cf7", "hubspot", "mailchimp", "klaviyo"]
-    if not has_form:
-        has_form = any(kw in raw.lower() for kw in form_platforms)
-
-    if has_form:
-        score += 25; positives.append("Contact / enquiry form present")
-    else:
-        issues.append({"severity": "critical",
-                       "issue": "No contact form found — you are only reachable during hours when you can answer the phone",
-                       "fix": "Add a simple contact form: Name, Email, Phone, Message. This captures leads 24/7 including nights and weekends.",
-                       "impact_key": "no_contact_form",
-                       "business_impact": get_impact(btype, "no_contact_form")})
-
-    # ── Address: text + raw HTML + schema.org JSON-LD ────────────────────────────
-    address_kws = ["street", " st,", " ave,", "avenue", " road", " rd,", "blvd", " lane",
-                   "suite", "level ", "floor ", "unit ", "shop ",
-                   " nsw ", " vic ", " qld ", " wa ", " sa ", " nt ",
-                   "new south wales", "victoria", "queensland", "ontario", "alberta",
-                   " ny ", " ca ", " tx ", " fl ", "london", "manchester", "sydney",
-                   "melbourne", "brisbane", "perth", "toronto", "new york"]
-    has_address = any(kw in html_text.lower() for kw in address_kws)
-    if not has_address:
-        # Check raw HTML and JSON-LD schema
-        has_address = bool(re.search(r'"streetAddress"', raw, re.I)) or \
-                      bool(re.search(r'"addressLocality"', raw, re.I)) or \
-                      any(kw in raw.lower() for kw in address_kws)
-
-    if has_address:
-        score += 10; positives.append("Address visible")
-    else:
-        issues.append({"severity": "medium",
-                       "issue": "Physical address not clearly visible — hurts local SEO and trust",
-                       "fix": "Show your full street address in the footer. This is required for Google Business Profile consistency and local search rankings.",
-                       "impact_key": "no_address",
-                       "business_impact": "Google's local ranking algorithm uses NAP (Name, Address, Phone) consistency. Missing address = lower map pack ranking."})
-
-    # ── Google Maps embed ────────────────────────────────────────────────────────
-    has_map = bool(soup.find("iframe", src=re.compile(r"maps\.google|google\.com/maps")))
-    if not has_map:
-        has_map = bool(re.search(r'maps\.google|google\.com/maps|maps\.app\.goo', raw, re.I))
-    if has_map:
-        score += 10; positives.append("Google Maps embedded or linked")
-    else:
-        issues.append({"severity": "low",
-                       "issue": "No Google Maps embed or link",
-                       "fix": "Embed a Google Map showing your location. It reinforces you're a real, established local business.",
-                       "impact_key": "no_map",
-                       "business_impact": "A map embed signals legitimacy and helps customers find you. Sites with maps have 25% higher trust scores in user studies."})
-
-    return {"score": min(score, 100), "issues": issues, "positives": positives,
-            "details": {"phone_found": bool(phones), "email_found": bool(emails),
-                        "contact_form": has_form, "address_found": has_address,
-                        "google_maps": has_map, "tel_link": bool(tel_links or tel_in_raw)}}
-
-
-def analyze_cta(soup: BeautifulSoup, btype: str) -> dict:
-    issues, positives = [], []
-    score = 0
-
-    cta_keywords = ["book", "call us", "call now", "get quote", "free quote", "contact us",
-                    "enquire", "enquiry", "schedule", "appointment", "get started", "sign up",
-                    "register", "buy now", "order now", "free trial", "claim", "request",
-                    "reserve", "get in touch", "speak to", "message us", "whatsapp", "chat"]
-
-    buttons = soup.find_all(["button", "a"])
-    cta_found = []
-    for b in buttons:
-        text = b.get_text(strip=True).lower()
-        if any(kw in text for kw in cta_keywords) and len(text) > 2:
-            cta_found.append(b.get_text(strip=True))
-
-    if len(cta_found) >= 3:
-        score += 50; positives.append(f"{len(cta_found)} CTAs found throughout page")
-    elif len(cta_found) == 2:
-        score += 35
-        issues.append({"severity": "medium", "issue": "Only 2 CTAs found — add more throughout the page",
-                       "fix": "Place CTAs at top, middle, and bottom. Repeat your primary CTA at least 3 times on a homepage.",
-                       "impact_key": "weak_cta", "business_impact": "Visitors who don't act in the first scroll rarely scroll back up. Missing CTAs in the middle and bottom loses these people."})
-    elif len(cta_found) == 1:
-        score += 20
-        issues.append({"severity": "critical", "issue": "Only 1 CTA found — 70% of small business sites have this problem",
-                       "fix": "Add clear CTA buttons at the top (hero section), after every service, and in the footer.",
-                       "impact_key": "no_cta", "business_impact": get_impact(btype, "no_cta")})
-    else:
-        issues.append({"severity": "critical", "issue": "No call-to-action buttons found — visitors have no clear next step",
-                       "fix": "Add prominent CTA buttons: 'Book Now', 'Get a Free Quote', 'Call Us'. This is the single highest-ROI change you can make.",
-                       "impact_key": "no_cta", "business_impact": get_impact(btype, "no_cta")})
-
-    # Clickable phone as CTA (max 20 pts)
-    tel_links = soup.find_all("a", href=re.compile(r"^tel:"))
-    if tel_links:
-        score += 20; positives.append("Clickable phone link present")
-
-    # Booking / online scheduling (max 30 pts) — check raw HTML too
-    booking_keywords = ["book online", "schedule online", "book appointment", "online booking",
-                        "calendly", "acuityscheduling", "acuity", "booker", "mindbody", "fresha",
-                        "bookwell", "timely", "square appointments", "setmore", "simplybook",
-                        "reserve", "reservation", "pick a time", "choose a time",
-                        "book a session", "book a class", "book a table", "book a consultation"]
-    html_str = str(soup).lower()
-    has_booking = any(kw in html_str for kw in booking_keywords)
-    if has_booking:
-        score += 30; positives.append("Online booking / scheduling present")
-    else:
-        issues.append({"severity": "medium", "issue": "No online booking or scheduling system found",
-                       "fix": "Integrate a free booking tool (Calendly, Fresha, or a simple form). Businesses with online booking convert 3x more website visitors.",
-                       "impact_key": "no_booking", "business_impact": get_impact(btype, "no_booking")})
-
-    return {"score": min(score, 100), "issues": issues, "positives": positives, "ctas_found": list(set(cta_found))[:5]}
-
-
-def analyze_trust(soup: BeautifulSoup, btype: str, raw_html: str = "") -> dict:
-    """Check trust signals in visible text AND raw HTML (catches review widgets, social links in scripts)."""
-    issues, positives = [], []
-    score = 0
-    html_text = soup.get_text(" ", strip=True).lower()
-    raw = (raw_html if raw_html else str(soup)).lower()
-
-    # Testimonials / reviews (max 30 pts) — check text AND raw HTML (widgets load via JS)
-    review_keywords = ["testimonial", "review", "what our", "what clients", "what customers",
-                       "5 star", "five star", "our clients say", "they say", "feedback",
-                       "verified review", "happy customer", "satisfied", "recommend",
-                       "rated", "star rating", "trustpilot", "google review", "yelp"]
-    review_platforms = ["trustpilot", "elfsight", "reviews.io", "grade.us", "birdeye",
-                        "podium", "widewail", "reviewsig", "stamped", "yotpo"]
-    has_reviews = any(kw in html_text for kw in review_keywords)
-    if not has_reviews:
-        has_reviews = any(kw in raw for kw in review_platforms + review_keywords)
-    if has_reviews:
-        score += 30; positives.append("Testimonials or reviews section found")
-    else:
-        issues.append({"severity": "critical", "issue": "No customer testimonials or reviews section",
-                       "fix": "Add a dedicated testimonials section with 3–5 real customer quotes, names, and if possible, photos.",
-                       "impact_key": "no_reviews", "business_impact": get_impact(btype, "no_reviews")})
-
-    # Google Reviews link / embed (max 25 pts)
-    has_google_review = bool(re.search(r'google\.com/maps|maps\.google|g\.page|google.*review|place_id|g\.co\/maps', raw))
-    if has_google_review:
-        score += 25; positives.append("Google Reviews reference found")
-    else:
-        issues.append({"severity": "critical", "issue": "No Google Reviews link or widget — the most trusted review source is missing",
-                       "fix": "Add a 'See Our Google Reviews' button linked to your Google Business Profile, or embed a Google Reviews widget.",
-                       "impact_key": "no_google_reviews", "business_impact": get_impact(btype, "no_google_reviews")})
-
-    # Trust badges / credentials (max 20 pts)
-    badge_keywords = ["certified", "accredited", "member of", "award", "award-winning", "licensed",
-                      "insured", "guarantee", "money back", "registered", "qualified",
-                      "years of experience", "years experience", "years in business",
-                      "abf", "hia", "master builder", "jcpa", "police checked", "background check",
-                      "satisfaction guaranteed", "trusted", "verified", "bbb", "iso "]
-    has_badges = any(kw in html_text for kw in badge_keywords)
-    if not has_badges:
-        has_badges = any(kw in raw for kw in badge_keywords)
-    if has_badges:
-        score += 20; positives.append("Trust badges or credentials present")
-    else:
-        issues.append({"severity": "medium", "issue": "No licences, certifications, or trust badges visible",
-                       "fix": "Display any professional licences, industry memberships, awards, or satisfaction guarantees. Even '10 Years in Business' builds trust.",
-                       "impact_key": "no_trust_badges", "business_impact": "Without credentials, customers have no way to verify your legitimacy. First-time visitors need reassurance before spending money."})
-
-    # Social media presence (max 15 pts) — check raw HTML so icon-only links are caught
-    social_pattern = re.compile(r'facebook\.com|instagram\.com|twitter\.com|x\.com|linkedin\.com|youtube\.com|tiktok\.com|pinterest\.com')
-    has_social = bool(social_pattern.search(raw))
-    if has_social:
-        score += 15; positives.append("Social media links present")
-    else:
-        issues.append({"severity": "medium", "issue": "No social media links — isolated from your biggest free marketing channels",
-                       "fix": "Add visible links to your active social profiles (Facebook, Instagram). Even having them listed signals that you're active and reachable.",
-                       "impact_key": "no_social", "business_impact": get_impact(btype, "no_social")})
-
-    # About / team page (max 10 pts)
-    about_keywords = ["about us", "our team", "meet the team", "our story", "who we are",
-                      "about me", "founder", "owner", "our mission", "our values",
-                      "about the", "meet us", "our history"]
-    has_about = any(kw in html_text for kw in about_keywords)
-    if not has_about:
-        has_about = any(kw in raw for kw in about_keywords)
-    if has_about:
-        score += 10; positives.append("About/team information present")
-    else:
-        issues.append({"severity": "low", "issue": "No 'About Us' or team information found",
-                       "fix": "Add a short About section with your story, your team, or why you started the business. People buy from people they feel they know.",
-                       "impact_key": "no_about", "business_impact": "Local businesses that show the people behind them convert 40% better than anonymous business sites."})
-
-    return {"score": min(score, 100), "issues": issues, "positives": positives}
 
 
 def analyze_security(fetch_result: dict, soup: BeautifulSoup) -> dict:
     issues, positives = [], []
     score = 0
 
-    # HTTPS (max 50 pts — non-negotiable in 2025)
     if fetch_result.get("is_https"):
         score += 50; positives.append("HTTPS / SSL enabled")
     else:
         issues.append({"severity": "critical",
                        "issue": "Site is NOT on HTTPS — browsers show 'Not Secure' to every visitor",
-                       "fix": "Install an SSL certificate immediately. Free via Let's Encrypt, takes minutes. Without it, you're losing trust before customers read a word.",
+                       "fix": "Install an SSL certificate immediately. Free via Let's Encrypt.",
                        "impact_key": "no_ssl",
-                       "business_impact": "Chrome marks your site 'Not Secure' in the address bar. Studies show 85% of people will abandon a purchase if they see this warning. For any business collecting contact details, this is a conversion killer."})
+                       "business_impact": "Chrome marks your site 'Not Secure' in the address bar. 85% of people will abandon a purchase if they see this warning."})
 
-    # Security headers (max 30 pts)
     headers = {k.lower(): v for k, v in fetch_result.get("headers", {}).items()}
     header_score = 0
     if "x-frame-options" in headers: header_score += 10
@@ -459,18 +161,16 @@ def analyze_security(fetch_result: dict, soup: BeautifulSoup) -> dict:
     score += header_score
     if header_score < 20:
         issues.append({"severity": "low", "issue": "Missing security response headers (X-Frame-Options, HSTS)",
-                       "fix": "Configure your web server to send X-Frame-Options, X-Content-Type-Options, and Strict-Transport-Security headers.",
-                       "impact_key": "no_security_headers", "business_impact": "Missing security headers leave your site vulnerable to clickjacking and data sniffing attacks. If a customer's data is compromised, the liability is yours."})
+                       "fix": "Configure your web server to send security headers.",
+                       "impact_key": "no_security_headers"})
 
-    # Login forms on HTTP (max 20 pts)
     has_form = bool(soup.find("form"))
     if has_form and fetch_result.get("is_https"):
         score += 20; positives.append("Forms served over HTTPS")
     elif has_form and not fetch_result.get("is_https"):
         issues.append({"severity": "critical", "issue": "Contact forms transmitting data over unencrypted HTTP",
-                       "fix": "All forms MUST be on HTTPS. Customer data entered on HTTP forms can be intercepted by attackers.",
-                       "impact_key": "form_on_http",
-                       "business_impact": "Any name, phone, or message submitted through your contact form travels unencrypted. This is a GDPR/privacy liability and a customer trust disaster."})
+                       "fix": "All forms MUST be on HTTPS.",
+                       "impact_key": "form_on_http"})
 
     return {"score": min(score, 100), "issues": issues, "positives": positives,
             "is_https": fetch_result.get("is_https", False)}
@@ -482,7 +182,6 @@ def analyze_performance(fetch_result: dict, soup: BeautifulSoup) -> dict:
     rt = fetch_result.get("response_time", 0)
     size = fetch_result.get("page_size_kb", 0)
 
-    # Response time (max 40 pts)
     if rt < 0.8:
         score += 40; positives.append(f"Excellent response time ({rt}s)")
     elif rt < 1.5:
@@ -491,13 +190,12 @@ def analyze_performance(fetch_result: dict, soup: BeautifulSoup) -> dict:
         score += 15
         issues.append({"severity": "medium", "issue": f"Page response time is {rt}s — above the 1.5s recommended threshold",
                        "fix": "Enable server-side caching, compress images to WebP format, and consider upgrading hosting.",
-                       "impact_key": "slow_load", "business_impact": f"Research shows a 1-second delay reduces conversions by 7%. At {rt}s, you're already losing enquiries to faster competitors."})
+                       "impact_key": "slow_load"})
     else:
         issues.append({"severity": "critical", "issue": f"Page is very slow — {rt}s response time (Google recommends under 1.5s)",
-                       "fix": "This requires immediate attention: compress all images, enable CDN, upgrade hosting plan, and minify CSS/JS.",
-                       "impact_key": "slow_load", "business_impact": get_impact("default", "slow_load") + f" At {rt} seconds, you're in the danger zone — 53% of mobile visitors have already left before your page finishes loading."})
+                       "fix": "Urgent: compress all images, enable CDN, upgrade hosting plan, and minify CSS/JS.",
+                       "impact_key": "slow_load"})
 
-    # Page size (max 20 pts)
     if size < 500:
         score += 20; positives.append(f"Lightweight page ({size}KB)")
     elif size < 1500:
@@ -506,13 +204,12 @@ def analyze_performance(fetch_result: dict, soup: BeautifulSoup) -> dict:
         score += 5
         issues.append({"severity": "medium", "issue": f"Large page size ({size}KB) — slow to load on mobile data",
                        "fix": "Compress images (use WebP format), remove unused CSS/JS, lazy-load images below the fold.",
-                       "impact_key": "large_page", "business_impact": "On a standard 4G connection, a 2MB page takes 4+ seconds to load. 73% of mobile users will abandon it."})
+                       "impact_key": "large_page"})
     else:
         issues.append({"severity": "critical", "issue": f"Very large page ({size}KB) — critically slow on mobile",
-                       "fix": "Urgent: Remove unused scripts, compress all images, implement lazy loading. Target under 1MB total.",
-                       "impact_key": "large_page", "business_impact": "A page this large will load in 6–10 seconds on mobile. You are losing the majority of mobile visitors before they see your business."})
+                       "fix": "Urgent: Remove unused scripts, compress all images, implement lazy loading.",
+                       "impact_key": "large_page"})
 
-    # Image optimization check (max 20 pts)
     imgs = soup.find_all("img")
     unoptimized = [i for i in imgs if i.get("src", "") and not any(ext in i.get("src", "").lower() for ext in [".webp", ".avif", ".svg"])]
     if not unoptimized or len(unoptimized) < 3:
@@ -520,18 +217,17 @@ def analyze_performance(fetch_result: dict, soup: BeautifulSoup) -> dict:
     else:
         score += 8
         issues.append({"severity": "medium", "issue": f"{len(unoptimized)} images not in modern WebP/AVIF format",
-                       "fix": "Convert all images to WebP format. WebP is 25–34% smaller than JPEG with the same quality, directly improving load speed.",
-                       "impact_key": "unoptimized_images", "business_impact": "Unoptimized images are the #1 cause of slow websites. Fixing this alone can cut your load time by 40%."})
+                       "fix": "Convert all images to WebP format.",
+                       "impact_key": "unoptimized_images"})
 
-    # Caching headers (max 20 pts)
     cache_headers = fetch_result.get("headers", {})
     cache_control = cache_headers.get("cache-control", cache_headers.get("Cache-Control", ""))
     if "max-age" in cache_control or "public" in cache_control:
         score += 20; positives.append("Browser caching enabled")
     else:
         issues.append({"severity": "low", "issue": "Browser caching not configured",
-                       "fix": "Add cache-control headers to your server config. Return visitors will load your site instantly instead of re-downloading everything.",
-                       "impact_key": "no_cache", "business_impact": "Without caching, every page visit re-downloads all your images and scripts. Return visitors experience the same slow load as first-timers."})
+                       "fix": "Add cache-control headers to your server config.",
+                       "impact_key": "no_cache"})
 
     return {"score": min(score, 100), "issues": issues, "positives": positives,
             "response_time": rt, "page_size_kb": size}
@@ -541,7 +237,6 @@ def analyze_mobile(soup: BeautifulSoup, fetch_result: dict) -> dict:
     issues, positives = [], []
     score = 0
 
-    # Viewport meta (max 40 pts — critical)
     viewport = soup.find("meta", attrs={"name": "viewport"})
     if viewport and "width=device-width" in viewport.get("content", ""):
         score += 40; positives.append("Proper viewport meta tag")
@@ -549,43 +244,40 @@ def analyze_mobile(soup: BeautifulSoup, fetch_result: dict) -> dict:
         score += 20
         issues.append({"severity": "medium", "issue": "Viewport tag present but may not be configured correctly",
                        "fix": "Use: <meta name='viewport' content='width=device-width, initial-scale=1'>",
-                       "impact_key": "bad_viewport", "business_impact": "An improperly configured viewport causes pinch-zoom issues on mobile, frustrating 60%+ of your visitors."})
+                       "impact_key": "bad_viewport"})
     else:
         issues.append({"severity": "critical", "issue": "Missing viewport meta tag — site displays as desktop on mobile phones",
                        "fix": "Add <meta name='viewport' content='width=device-width, initial-scale=1'> to your <head> immediately.",
-                       "impact_key": "no_viewport", "business_impact": "Without a viewport tag, your site displays as a tiny desktop page on phones. 73% of mobile users will NOT return after a bad mobile experience."})
+                       "impact_key": "no_viewport"})
 
-    # Font size check (max 20 pts)
     small_text = soup.find_all(style=re.compile(r'font-size:\s*([0-9]+)px'))
-    too_small = [t for t in small_text if int(re.search(r'font-size:\s*([0-9]+)px', t.get("style","")).group(1)) < 12
-                 if re.search(r'font-size:\s*([0-9]+)px', t.get("style",""))]
+    too_small = [t for t in small_text if int(re.search(r'font-size:\s*([0-9]+)px', t.get("style", "")).group(1)) < 12
+                 if re.search(r'font-size:\s*([0-9]+)px', t.get("style", ""))]
     if not too_small:
         score += 20; positives.append("Text sizes appear mobile-friendly")
     else:
         score += 5
-        issues.append({"severity": "medium", "issue": f"{len(too_small)} elements with font size under 12px — too small to read on mobile",
-                       "fix": "Set minimum font size to 14–16px for body text. Users should never need to pinch-zoom to read content.",
-                       "impact_key": "small_text", "business_impact": "Unreadable text on mobile is an immediate bounce trigger. Google's mobile-first indexing also penalises this."})
+        issues.append({"severity": "medium", "issue": f"{len(too_small)} elements with font size under 12px",
+                       "fix": "Set minimum font size to 14–16px for body text.",
+                       "impact_key": "small_text"})
 
-    # Fixed-width elements (max 20 pts)
     fixed = soup.find_all(style=re.compile(r'width:\s*\d{4,}px'))
     if not fixed:
         score += 20; positives.append("No oversized fixed-width elements")
     else:
         score += 5
-        issues.append({"severity": "medium", "issue": f"{len(fixed)} elements with fixed large pixel widths — causes horizontal scrolling on mobile",
-                       "fix": "Replace fixed pixel widths with max-width or percentage values. Horizontal scrolling on mobile is a UX failure.",
-                       "impact_key": "fixed_width", "business_impact": "Horizontal scrolling on mobile increases bounce rate by 60%+. It signals an unprofessional, broken site."})
+        issues.append({"severity": "medium", "issue": f"{len(fixed)} elements with fixed large pixel widths",
+                       "fix": "Replace fixed pixel widths with max-width or percentage values.",
+                       "impact_key": "fixed_width"})
 
-    # Response time on mobile (max 20 pts)
     rt = fetch_result.get("response_time", 0)
     if rt < 2.0:
         score += 20; positives.append("Acceptable mobile load speed")
     else:
         issues.append({"severity": "medium" if rt < 3 else "critical",
                        "issue": f"Load time of {rt}s is unacceptable for mobile users",
-                       "fix": "Mobile users are often on slower connections. Target under 2 seconds. Compress images, enable caching, use a CDN.",
-                       "impact_key": "mobile_slow", "business_impact": "53% of mobile users abandon sites that take over 3 seconds to load. Mobile is where 60%+ of local searches happen."})
+                       "fix": "Mobile users are often on slower connections. Target under 2 seconds.",
+                       "impact_key": "mobile_slow"})
 
     return {"score": min(score, 100), "issues": issues, "positives": positives}
 
@@ -616,24 +308,37 @@ def get_psi_scores(url: str) -> dict:
 # ─── MASTER RUNNER ───────────────────────────────────────────────────────────
 
 def run_audit(url: str) -> dict:
+    """Run the full website audit — AI for content analysis, Python for technical checks."""
+    from ai_engine import ai_audit_page, score_contact, score_cta, score_trust
+
     print(f"[Audit] Fetching: {url}")
     fetch = fetch_page(url)
     if fetch.get("error"):
         return {"error": fetch["error"], "url": url}
 
-    full_html = fetch.get("full_html", fetch["html"])  # homepage + contact/about pages
+    full_html = fetch.get("full_html", fetch["html"])
     soup = BeautifulSoup(fetch["html"], "lxml")
+    domain = urlparse(fetch["final_url"]).netloc.replace("www.", "")
 
-    seo      = analyze_seo(soup, url)
-    contact  = analyze_contact(soup, "default", raw_html=full_html)   # pass raw html
-    cta      = analyze_cta(soup, "default")
-    trust    = analyze_trust(soup, "default", raw_html=full_html)     # pass raw html
+    # ── AI-POWERED ANALYSIS (contact, CTA, trust, business type) ────────────
+    print("[Audit] Running AI analysis...")
+    ai_result = ai_audit_page(full_html, domain)
+    business_type = ai_result.get("business_type", "Local Business")
+    print(f"[Audit] AI detected business type: {business_type}")
+
+    # Convert AI findings to scored results
+    contact = score_contact(ai_result.get("contact", {}))
+    cta = score_cta(ai_result.get("cta", {}))
+    trust = score_trust(ai_result.get("trust", {}))
+
+    # ── PYTHON-BASED TECHNICAL CHECKS ───────────────────────────────────────
+    seo = analyze_seo(soup, url)
     security = analyze_security(fetch, soup)
-    perf     = analyze_performance(fetch, soup)
-    mobile   = analyze_mobile(soup, fetch)
-    psi      = get_psi_scores(fetch["final_url"])
+    perf = analyze_performance(fetch, soup)
+    mobile = analyze_mobile(soup, fetch)
+    psi = get_psi_scores(fetch["final_url"])
 
-    # Weighted overall — business-logic weights
+    # ── WEIGHTED OVERALL SCORE ──────────────────────────────────────────────
     weights = {"seo": 0.15, "contact": 0.20, "cta": 0.18, "trust": 0.18,
                "security": 0.15, "performance": 0.09, "mobile": 0.05}
     overall = round(
@@ -646,7 +351,7 @@ def run_audit(url: str) -> dict:
         mobile["score"]   * weights["mobile"]
     )
 
-    # Merge and sort all issues
+    # ── MERGE AND SORT ALL ISSUES ───────────────────────────────────────────
     sev_order = {"critical": 0, "medium": 1, "low": 2}
     all_issues = []
     for cat, result in [("SEO", seo), ("Contact", contact), ("CTA & Conversion", cta),
@@ -656,18 +361,15 @@ def run_audit(url: str) -> dict:
             all_issues.append({**issue, "category": cat})
     all_issues.sort(key=lambda x: sev_order.get(x["severity"], 9))
 
-
-    # Collect positives across all
     all_positives = []
     for result in [seo, contact, cta, trust, security, perf, mobile]:
         all_positives.extend(result.get("positives", []))
 
-    domain = urlparse(fetch["final_url"]).netloc.replace("www.", "")
     biz_name = domain.split(".")[0].replace("-", " ").replace("_", " ").title()
 
     return {
         "url": fetch["final_url"], "domain": domain, "business_name": biz_name,
-"overall_score": overall,
+        "business_type": business_type, "overall_score": overall,
         "is_https": fetch["is_https"], "response_time": fetch["response_time"],
         "page_size_kb": fetch["page_size_kb"],
         "scores": {
@@ -682,384 +384,4 @@ def run_audit(url: str) -> dict:
         "all_issues": all_issues,
         "all_positives": all_positives,
         "psi": psi,
-    }
-
-
-# ─── CUSTOMER BEHAVIOR INTELLIGENCE ─────────────────────────────────────────
-# What customers of each business type specifically look for before choosing.
-# Each expectation includes: name, why it matters, a real % stat, and how to detect it.
-
-CUSTOMER_EXPECTATIONS = {
-    "salon": {
-        "label": "Hair & Beauty Salon",
-        "headline_stat": "78% of salon clients research a business online before ever stepping through the door.",
-        "expectations": [
-            {
-                "name": "Photo gallery of work (before/after)",
-                "why": "Clients choose their stylist based on seeing actual results — not words.",
-                "stat": "67% of salon customers won't book without seeing real photo examples of past work.",
-                "keywords": ["gallery", "portfolio", "before", "after", "our work", "transformations", "results"],
-            },
-            {
-                "name": "Online booking system",
-                "why": "Modern clients want to book a time that suits them — on their own schedule, not yours.",
-                "stat": "62% of salon clients prefer online booking over calling. Miss this and you lose them to whoever has it.",
-                "keywords": ["book online", "book now", "schedule", "fresha", "bookwell", "mindbody", "calendly", "online appointment"],
-            },
-            {
-                "name": "Price list / service menu",
-                "why": "Price anxiety is the #1 reason customers don't walk in or book. They need to know what to expect.",
-                "stat": "54% of people will leave a salon website if they can't find pricing — and go straight to a competitor.",
-                "keywords": ["price", "pricing", "from $", "from £", "cost", "rates", "packages", "services"],
-            },
-            {
-                "name": "Opening hours clearly displayed",
-                "why": "Walk-in clients decide in seconds whether to come in. No hours = missed walk-ins every day.",
-                "stat": "41% of salon visits are same-day decisions — customers need to see your hours instantly.",
-                "keywords": ["monday", "tuesday", "open", "hours", "9am", "10am", "closed", "trading hours"],
-            },
-            {
-                "name": "Google Reviews or testimonials",
-                "why": "For a salon, reviews are everything — customers are trusting you with their appearance.",
-                "stat": "92% of new salon clients read reviews before their first visit. No reviews = no new clients.",
-                "keywords": ["review", "testimonial", "star", "rated", "google", "trustpilot", "5 star"],
-            },
-        ],
-    },
-    "gym": {
-        "label": "Gym / Martial Arts Studio",
-        "headline_stat": "81% of gym-goers research studios online before visiting — and 63% won't join without seeing a class schedule.",
-        "expectations": [
-            {
-                "name": "Free trial or intro offer",
-                "why": "People won't commit money to a gym they've never tried. A free trial removes that barrier completely.",
-                "stat": "Gyms with a visible free trial offer convert 3x more website visitors into paying members.",
-                "keywords": ["free trial", "free class", "intro offer", "first class free", "try us", "introductory", "trial"],
-            },
-            {
-                "name": "Class schedule / timetable",
-                "why": "Before joining, every potential member checks: 'Are there classes that fit my life?'",
-                "stat": "63% won't enquire without seeing a schedule — they assume it won't fit and move on.",
-                "keywords": ["schedule", "timetable", "class times", "monday", "tuesday", "classes", "calendar"],
-            },
-            {
-                "name": "Pricing / membership options",
-                "why": "Gym pricing varies wildly. Hiding it creates anxiety and drives people to competitors who are transparent.",
-                "stat": "71% of gym enquiries are about price. Not showing it means you answer the same question endlessly — or lose the lead.",
-                "keywords": ["price", "pricing", "membership", "per month", "weekly", "rates", "plans", "$/week"],
-            },
-            {
-                "name": "Photos or videos of the facility",
-                "why": "People want to visualise themselves training there before driving across town to check it out.",
-                "stat": "Gyms with facility photos get 45% more enquiries than those without.",
-                "keywords": ["gallery", "our gym", "facility", "equipment", "mat", "ring", "studio", "floor"],
-            },
-            {
-                "name": "Instructor / coach profiles",
-                "why": "For martial arts especially, the coach is the product. Parents and adults choose the person, not just the gym.",
-                "stat": "For martial arts studios, instructor credibility is the #1 trust factor for new member sign-ups.",
-                "keywords": ["coach", "instructor", "trainer", "sensei", "professor", "belt", "credentials", "experience"],
-            },
-        ],
-    },
-    "restaurant": {
-        "label": "Restaurant / Café",
-        "headline_stat": "92% of diners look at a restaurant's website before choosing where to eat — and the menu is the first thing they look for.",
-        "expectations": [
-            {
-                "name": "Full menu with prices",
-                "why": "Customers decide where to eat based on the menu. No menu online = no visit.",
-                "stat": "86% of diners abandon a restaurant website that has no menu. They choose somewhere else.",
-                "keywords": ["menu", "starter", "main", "dessert", "pizza", "burger", "pasta", "soup", "price"],
-            },
-            {
-                "name": "Online reservation or booking",
-                "why": "Customers plan meals in advance and want to secure a table without picking up the phone.",
-                "stat": "Restaurants with online booking get 40% more reservations than phone-only. OpenTable alone drives billions in revenue.",
-                "keywords": ["reserve", "reservation", "book a table", "opentable", "resy", "book now"],
-            },
-            {
-                "name": "Food photos",
-                "why": "Food is a visual decision. Seeing a photo of a dish is the #1 factor that triggers a craving and a booking.",
-                "stat": "Restaurants with professional food photography on their site see 30% higher reservation rates.",
-                "keywords": ["gallery", "food", "photo", "dish", "cuisine"],
-            },
-            {
-                "name": "Opening hours and address",
-                "why": "'Are they open right now?' is the most common restaurant Google search. If your site doesn't answer instantly, they leave.",
-                "stat": "43% of restaurant visitors bounce immediately if they can't find hours within 5 seconds.",
-                "keywords": ["monday", "open", "hours", "closed", "lunch", "dinner", "address", "located"],
-            },
-        ],
-    },
-    "plumber": {
-        "label": "Plumbing Business",
-        "headline_stat": "In a plumbing emergency, 88% of customers call the first plumber whose website clearly shows availability and phone number.",
-        "expectations": [
-            {
-                "name": "24/7 emergency availability",
-                "why": "Plumbing emergencies don't follow business hours. If you offer emergency callouts and don't say so, you lose those jobs.",
-                "stat": "Emergency plumbing jobs are worth 2-3x normal rates. Not advertising availability loses you your most profitable work.",
-                "keywords": ["24/7", "emergency", "after hours", "anytime", "available", "urgent", "same day"],
-            },
-            {
-                "name": "Service area clearly listed",
-                "why": "Before calling, customers check: 'Do they cover my area?' No list = they assume you don't and call someone else.",
-                "stat": "Plumbers who list their service suburbs get 58% more local calls than those who don't.",
-                "keywords": ["service area", "we service", "areas we cover", "suburb", "locations", "nearby"],
-            },
-            {
-                "name": "Free quote or upfront pricing",
-                "why": "Plumbers have a reputation for surprise bills. Offering a free quote removes the #1 objection.",
-                "stat": "Plumbers offering free quotes get 44% more enquiries from new customers than those without.",
-                "keywords": ["free quote", "no call-out fee", "free estimate", "fixed price", "upfront"],
-            },
-            {
-                "name": "Licence and insurance info",
-                "why": "Homeowners are handing you access to their home and water system. They need proof you're legit.",
-                "stat": "61% of homeowners won't hire a tradie who doesn't display licence/insurance information online.",
-                "keywords": ["licence", "licensed", "insured", "insurance", "registered", "certified"],
-            },
-        ],
-    },
-    "dentist": {
-        "label": "Dental Practice",
-        "headline_stat": "77% of patients research a new dental practice online before booking — and trust signals are the deciding factor.",
-        "expectations": [
-            {
-                "name": "Online appointment booking",
-                "why": "Patients dread calling a dental office. Online booking removes that anxiety completely.",
-                "stat": "Dental practices with online booking see 35% more new patient appointments from their website.",
-                "keywords": ["book appointment", "book online", "schedule online", "calendly", "request appointment"],
-            },
-            {
-                "name": "Insurance / health fund info",
-                "why": "'Do they accept my insurance?' is the first question every new patient asks. If your site doesn't answer it, they call a competitor who does.",
-                "stat": "55% of patients choose a dentist based on insurance compatibility. Not listing yours costs you half your potential patients.",
-                "keywords": ["insurance", "health fund", "medibank", "bupa", "nib", "hcf", "gap", "bulk bill"],
-            },
-            {
-                "name": "Before/after treatment photos",
-                "why": "For cosmetic or orthodontic treatments, patients need visual proof that you deliver results.",
-                "stat": "Dental practices showing before/after photos convert 2.4x more cosmetic treatment enquiries.",
-                "keywords": ["before", "after", "results", "transformation", "case", "gallery"],
-            },
-            {
-                "name": "New patient specials or offers",
-                "why": "Dental anxiety is real. A new patient special (e.g., free checkup) removes the financial barrier to that first visit.",
-                "stat": "Practices offering a new patient special see 28% more first-time appointments from web traffic.",
-                "keywords": ["new patient", "first visit", "special offer", "free checkup", "gap-free", "no gap"],
-            },
-            {
-                "name": "Dentist credentials and team page",
-                "why": "Patients want to know who will be working in their mouth. A team page builds trust before the first appointment.",
-                "stat": "Practices with visible dentist bios have 40% lower patient no-show rates — trust is built before arrival.",
-                "keywords": ["dr.", "doctor", "dentist", "team", "meet", "qualifications", "experience", "about our"],
-            },
-        ],
-    },
-    "lawyer": {
-        "label": "Law Firm",
-        "headline_stat": "74% of legal clients research multiple firms online before making contact — and most choose based on specialisation clarity and trust signals.",
-        "expectations": [
-            {
-                "name": "Practice areas clearly listed",
-                "why": "Clients need to know immediately if you handle their specific legal issue. Vague firms get skipped.",
-                "stat": "Law firms with clear practice area pages get 3x more targeted enquiries than generic 'we do everything' firms.",
-                "keywords": ["practice area", "family law", "criminal", "personal injury", "conveyancing", "immigration", "employment", "wills"],
-            },
-            {
-                "name": "Free consultation offer",
-                "why": "Legal services are expensive and high-stakes. A free initial consultation removes the biggest barrier to enquiry.",
-                "stat": "Law firms offering a free consultation get 52% more initial enquiries than those who don't.",
-                "keywords": ["free consultation", "free advice", "no obligation", "initial consultation", "speak to us"],
-            },
-            {
-                "name": "Lawyer profiles with credentials",
-                "why": "Clients are choosing someone to represent their most critical life issues. They need to know who you are.",
-                "stat": "68% of legal clients say lawyer credentials on the website were a deciding factor in choosing the firm.",
-                "keywords": ["solicitor", "barrister", "attorney", "llb", "admitted", "qualified", "experience", "year"],
-            },
-        ],
-    },
-    "medical": {
-        "label": "Medical / Health Clinic",
-        "headline_stat": "80% of patients search online for a new doctor or clinic before booking — availability and trust are the top factors.",
-        "expectations": [
-            {
-                "name": "Online appointment booking",
-                "why": "Patients expect to book a GP appointment the same way they book a restaurant — online, instantly.",
-                "stat": "Clinics with online booking see 45% more new patient appointments than phone-only practices.",
-                "keywords": ["book appointment", "book online", "schedule", "healthengine", "hotdoc", "book now"],
-            },
-            {
-                "name": "Bulk billing / fee information",
-                "why": "Patients choose their clinic based on cost. Not listing your billing policy loses you patients before they call.",
-                "stat": "57% of Australians choose a GP based on bulk billing availability. Not stating it costs you these patients.",
-                "keywords": ["bulk bill", "bulk billing", "fee", "cost", "medicare", "gap payment"],
-            },
-            {
-                "name": "Doctor profiles",
-                "why": "Patients build a relationship with their doctor. Seeing who's available helps them choose and commit.",
-                "stat": "Clinics with doctor profile pages have 35% lower patient dropout rates between first enquiry and first appointment.",
-                "keywords": ["dr.", "doctor", "gp", "physician", "specialist", "team", "meet our"],
-            },
-        ],
-    },
-    "tradie": {
-        "label": "Trade Business",
-        "headline_stat": "73% of homeowners search Google to find a local tradie — and the winner is whoever has the most trustworthy online presence.",
-        "expectations": [
-            {
-                "name": "Free quote offer",
-                "why": "The biggest reason homeowners don't call a tradie is fear of being overcharged. A free quote removes that wall.",
-                "stat": "Tradies offering a visible free quote get 44% more website enquiries than those without.",
-                "keywords": ["free quote", "free estimate", "no call-out fee", "get a quote", "obligation free"],
-            },
-            {
-                "name": "Licence and insurance display",
-                "why": "Homeowners are trusting you with their biggest asset. Licence and insurance info is non-negotiable for their peace of mind.",
-                "stat": "61% of homeowners won't hire a tradie who doesn't show licence or insurance details online.",
-                "keywords": ["licence", "licensed", "insured", "insurance", "registered", "accredited"],
-            },
-            {
-                "name": "Portfolio / past work photos",
-                "why": "Before & after photos prove your quality better than any description. They remove doubt at the consideration stage.",
-                "stat": "Tradies showing work photos get 51% more qualified enquiries — customers self-qualify based on seeing the standard of work.",
-                "keywords": ["gallery", "our work", "portfolio", "project", "before", "after", "photos", "completed"],
-            },
-            {
-                "name": "Response time / availability promise",
-                "why": "For urgent jobs, speed matters. Advertising a response time ('Same-day quotes') wins emergency work.",
-                "stat": "Tradies who advertise same-day response get 38% more emergency/urgent enquiries from their website.",
-                "keywords": ["same day", "24 hour", "fast response", "quick", "prompt", "emergency", "available now"],
-            },
-        ],
-    },
-    "accountant": {
-        "label": "Accounting Firm",
-        "headline_stat": "69% of businesses choose their accountant based on online research — specialisation and trust are the deciding factors.",
-        "expectations": [
-            {
-                "name": "Services and specialisations listed",
-                "why": "Clients want an accountant who understands their specific situation — not a generalist.",
-                "stat": "Accounting firms with specific service pages get 2.8x more targeted enquiries than generalist firms.",
-                "keywords": ["tax return", "bas", "bookkeeping", "business tax", "self-employed", "smsf", "gst", "payroll"],
-            },
-            {
-                "name": "Pricing or package information",
-                "why": "Accounting fees vary enormously. Giving even a price range removes the biggest barrier to enquiry.",
-                "stat": "Firms showing pricing get 46% more initial enquiries — clients hate not knowing what they'll pay.",
-                "keywords": ["price", "pricing", "package", "from $", "fixed fee", "cost", "rates"],
-            },
-            {
-                "name": "Team credentials and experience",
-                "why": "Clients are entrusting you with their financial health. Seeing CPA, CA or experience years builds trust.",
-                "stat": "68% of accounting clients say visible professional credentials on the website were a key trust factor.",
-                "keywords": ["cpa", "ca", "chartered", "qualified", "cfa", "registered tax", "experience"],
-            },
-        ],
-    },
-    "retail": {
-        "label": "Retail Store",
-        "headline_stat": "76% of in-store shoppers research online before visiting — your website is the first impression, not the store.",
-        "expectations": [
-            {
-                "name": "Product catalogue or shop online",
-                "why": "Customers want to browse before committing to a trip. No products shown = no reason to visit.",
-                "stat": "Retail stores with online catalogues drive 34% more foot traffic than stores without any online product display.",
-                "keywords": ["shop", "products", "catalogue", "collection", "range", "buy", "add to cart", "store"],
-            },
-            {
-                "name": "Store hours and location",
-                "why": "Before making the trip, every customer checks: 'Are they open? Where exactly are they?'",
-                "stat": "Missing store hours is the #1 reason retail websites lose foot traffic — 43% of shoppers check hours before visiting.",
-                "keywords": ["monday", "open", "hours", "saturday", "located", "address", "find us", "parking"],
-            },
-            {
-                "name": "New arrivals or featured products",
-                "why": "Returning customers want to know what's new. Without it, your site feels stale and there's no reason to return.",
-                "stat": "Retail sites that update product highlights monthly have 3x higher return visitor rates.",
-                "keywords": ["new arrival", "new in", "featured", "trending", "season", "latest", "just arrived"],
-            },
-        ],
-    },
-    "real_estate": {
-        "label": "Real Estate Agency",
-        "headline_stat": "97% of property buyers and renters start their search online — your website is your most powerful sales tool.",
-        "expectations": [
-            {
-                "name": "Property listings / search tool",
-                "why": "Without searchable listings, property seekers have zero reason to use your site over Domain or REA.",
-                "stat": "Agencies with direct listing search on their site retain 4x more repeat visitors than those without.",
-                "keywords": ["listings", "properties", "for sale", "for rent", "search", "bedrooms", "price range"],
-            },
-            {
-                "name": "Agent profiles",
-                "why": "Sellers choose an agent, not just an agency. Profiles with track record and results win listings.",
-                "stat": "Agencies with detailed agent profiles (including sales history) win 37% more appraisal requests.",
-                "keywords": ["agent", "team", "sales", "expertise", "sold", "listed", "profile"],
-            },
-            {
-                "name": "Free property appraisal offer",
-                "why": "A free appraisal is the #1 lead magnet for real estate agencies. Without it, you're missing your primary acquisition tool.",
-                "stat": "Agencies with a visible free appraisal CTA get 3.2x more vendor enquiries from their website.",
-                "keywords": ["free appraisal", "property appraisal", "market appraisal", "estimate", "value"],
-            },
-        ],
-    },
-    "default": {
-        "label": "Local Business",
-        "headline_stat": "85% of consumers research a local business online before making contact — your website is your first impression.",
-        "expectations": [
-            {
-                "name": "Clear contact information",
-                "why": "Customers ready to buy need to reach you immediately. Hard-to-find contact info loses warm leads.",
-                "stat": "46% of consumers lose trust in a business if they can't easily find contact information on their website.",
-                "keywords": ["phone", "contact", "email", "address", "reach us"],
-            },
-            {
-                "name": "Customer reviews or testimonials",
-                "why": "Social proof is the #1 trust factor for new customers making a first purchase or enquiry.",
-                "stat": "92% of consumers read reviews before choosing a local business. No reviews = choosing a competitor instead.",
-                "keywords": ["review", "testimonial", "star", "rated", "customer", "client says"],
-            },
-            {
-                "name": "Clear call-to-action",
-                "why": "Visitors need to know exactly what to do next. Without a CTA, they leave having done nothing.",
-                "stat": "70% of small business websites lack an effective call-to-action — this is the single biggest conversion leak.",
-                "keywords": ["book", "call", "get quote", "enquire", "contact us", "get started", "buy now"],
-            },
-        ],
-    },
-}
-
-
-def check_customer_expectations(soup: BeautifulSoup, btype: str, html_text: str = "") -> dict:
-    """Check which customer expectations are met vs. missing for this business type."""
-    expectations_data = CUSTOMER_EXPECTATIONS.get(btype, CUSTOMER_EXPECTATIONS["default"])
-    page_text = soup.get_text(" ", strip=True).lower()
-    page_html = str(soup).lower()
-    full_text = (page_text + " " + page_html + " " + html_text.lower())[:200000]
-
-    met = []
-    missing = []
-
-    for exp in expectations_data["expectations"]:
-        found = any(kw.lower() in full_text for kw in exp["keywords"])
-        entry = {
-            "name": exp["name"],
-            "why": exp["why"],
-            "stat": exp["stat"],
-        }
-        if found:
-            met.append(entry)
-        else:
-            missing.append(entry)
-
-    return {
-        "label": expectations_data["label"],
-        "headline_stat": expectations_data["headline_stat"],
-        "met": met,
-        "missing": missing,
     }
