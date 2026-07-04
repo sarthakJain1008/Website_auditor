@@ -305,11 +305,23 @@ if run_btn and url_input.strip():
         progress.progress(50, text="◌  Analysing SEO, security, contacts, trust signals...")
 
         if audit.get("error"):
-            st.error(f"Could not reach **{url}**: {audit['error']}")
             progress.empty()
+            err = str(audit["error"])
+            low = err.lower()
+            if any(w in low for w in ["parked", "offline", "for sale", "blocking", "could not be loaded"]):
+                st.warning(
+                    f"**No live website found at `{url}`.**\n\n"
+                    f"{err}\n\n"
+                    "This usually means the domain is parked, for sale, redirects to a holding page, "
+                    "or blocks automated visits — so there's nothing real to audit. "
+                    "Double-check the address, or try the exact URL a customer would land on."
+                )
+            else:
+                st.error(f"**Couldn't reach `{url}`.**\n\n{err}\n\n"
+                         "Check the spelling of the domain and that the site is online.")
             st.stop()
 
-        progress.progress(70, text="◌  Running Gemini analysis...")
+        progress.progress(70, text="◌  Building insights & report...")
         from ai_engine import enrich_audit
         audit = enrich_audit(audit)
 
