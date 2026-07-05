@@ -202,9 +202,51 @@ def _img_name(src: str) -> str:
     return name if name and "." in name else src[:60]
 
 
+_TRACKER_SIGNS = ["facebook.com/tr", "/tr?", "google-analytics", "googletagmanager",
+                  "doubleclick", "bat.bing", "/pixel", "pixel.", "analytics.",
+                  "quantserve", "hotjar", "clarity.ms", "scorecardresearch"]
+
+
+def _img_files(img_tags: list) -> list:
+    """Real content-image filenames for evidence: skip data-URIs and tracking
+    pixels (e.g. facebook.com/tr), and de-duplicate. Display only — never scoring."""
+    out, seen = [], set()
+    for i in img_tags:
+        src = (i.get("src", "") or i.get("data-src", "")).strip()
+        low = src.lower()
+        if not src or low.startswith("data:") or any(t in low for t in _TRACKER_SIGNS):
+            continue
+        name = _img_name(src)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
 def _clean_phone(p: str) -> str:
     """Tidy a detected phone string for display."""
     return re.sub(r'\s+', ' ', str(p)).strip()
+
+
+def _clean_ctas(ctas: list) -> list:
+    """Tidy the CTA list for DISPLAY (scoring uses the raw count, unchanged).
+    Product-card anchors concatenate price/description text; keep the short,
+    button-like labels so evidence reads cleanly."""
+    seen, clean = set(), []
+    for c in ctas:
+        t = re.sub(r'\s+', ' ', str(c)).strip()
+        k = t.lower()
+        if not t or k in seen:
+            continue
+        seen.add(k)
+        if len(t) <= 28:                 # a real button label, not a whole card
+            clean.append(t)
+    if not clean:                        # fallback: shortest few, trimmed
+        for c in sorted({re.sub(r'\s+', ' ', str(x)).strip() for x in ctas}, key=len):
+            if c:
+                clean.append((c[:38] + "…") if len(c) > 38 else c)
+    return clean[:6]
 
 
 def _best_display_phone(candidates: list) -> str:
@@ -235,6 +277,40 @@ def _best_display_phone(candidates: list) -> str:
         if sc > best_score:
             best, best_score = s, sc
     return best
+
+
+_SOCIAL_DOMAINS = {"facebook.com": "Facebook", "instagram.com": "Instagram",
+                   "linkedin.com": "LinkedIn", "youtube.com": "YouTube",
+                   "tiktok.com": "TikTok", "twitter.com": "Twitter/X",
+                   "x.com": "Twitter/X", "pinterest.com": "Pinterest"}
+# share/SDK/widget/tracking URLs are NOT the business's own profile
+_SOCIAL_EXCLUDE = ["/sharer", "sharer.php", "/share?", "/share/", "/intent/", "sharearticle",
+                   "/plugins/", "connect.facebook", "platform.", "/tr?", "/embed", "/oauth",
+                   "/dialog/", "developers.", "business.facebook", "/ads", "pixel", "gtag", "api."]
+
+
+def _find_social_links(full_html: str) -> dict:
+    """Real social PROFILE links only (actual <a href> to the platform host),
+    excluding share buttons, SDKs and tracking scripts. Returns {name: url}."""
+    found = {}
+    try:
+        s = BeautifulSoup(full_html, "lxml")
+    except Exception:
+        return found
+    for a in s.find_all("a", href=True):
+        href = a["href"].strip()
+        low = href.lower()
+        if not low or low.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        if any(x in low for x in _SOCIAL_EXCLUDE):
+            continue
+        host = urlparse(low if "//" in low else "http://" + low).netloc
+        if host.startswith("www."):
+            host = host[4:]
+        for dom, name in _SOCIAL_DOMAINS.items():
+            if host == dom or host.endswith("." + dom):
+                found.setdefault(name, href)
+    return found
 
 
 # ─── CONTACT ANALYSIS (regex baseline) ──────────────────────────────────────
@@ -408,8 +484,8 @@ def analyze_cta(soup: BeautifulSoup, raw_html: str = "") -> dict:
         if any(kw in text for kw in cta_keywords) and len(text) > 2 and len(text) < 50:
             cta_found.append(b.get_text(strip=True))
 
-    _cta_list = list(dict.fromkeys(cta_found))  # de-dupe, keep order
-    _cta_evidence = "CTAs detected: " + ", ".join(f'"{c}"' for c in _cta_list[:6]) if _cta_list else ""
+    _cta_list = _clean_ctas(cta_found)  # tidy labels for display (count unchanged)
+    _cta_evidence = "CTAs detected: " + ", ".join(f'"{c}"' for c in _cta_list) if _cta_list else ""
     if len(cta_found) >= 3:
         score += 50; positives.append(f"{len(cta_found)} CTAs found throughout page")
     elif len(cta_found) == 2:
@@ -448,7 +524,7 @@ def analyze_cta(soup: BeautifulSoup, raw_html: str = "") -> dict:
                        "fix": "Integrate a free booking tool (Calendly, Fresha, or a simple form). Businesses with online booking convert 3x more website visitors.",
                        "impact_key": "no_booking"})
 
-    return {"score": min(score, 100), "issues": issues, "positives": positives, "ctas_found": list(set(cta_found))[:5]}
+    return {"score": min(score, 100), "issues": issues, "positives": positives, "ctas_found": _cta_list}
 
 
 # ─── TRUST ANALYSIS (regex baseline) ────────────────────────────────────────
@@ -523,12 +599,14 @@ def analyze_trust(soup: BeautifulSoup, raw_html: str = "") -> dict:
     if has_google_review and "Google Reviews" not in review_sources:
         review_sources.append("Google Reviews")
 
-    # Social media
+    # Social media.
+    # SCORING is unchanged (broad string match, same as baseline). Only the
+    # DISPLAYED platform list is made accurate: it uses real profile <a href>
+    # links, so tracking-script mentions of linkedin.com/tiktok.com no longer
+    # show up as fake profiles in the evidence.
     social_pattern = re.compile(r'facebook\.com|instagram\.com|twitter\.com|x\.com|linkedin\.com|youtube\.com|tiktok\.com|pinterest\.com')
-    _social_map = {"facebook.com": "Facebook", "instagram.com": "Instagram", "twitter.com": "Twitter/X",
-                   "x.com": "Twitter/X", "linkedin.com": "LinkedIn", "youtube.com": "YouTube",
-                   "tiktok.com": "TikTok", "pinterest.com": "Pinterest"}
-    social_platforms = sorted({name for dom, name in _social_map.items() if dom in raw})
+    social_links = _find_social_links(raw_html if raw_html else str(soup))
+    social_platforms = sorted(social_links.keys())
     has_social = bool(social_pattern.search(raw))
     if has_social:
         score += 15; positives.append("Social media links present")
@@ -607,8 +685,7 @@ def analyze_seo(soup: BeautifulSoup, url: str) -> dict:
 
     all_imgs = soup.find_all("img")
     no_alt = [i for i in all_imgs if not i.get("alt", "").strip()]
-    missing_alt_files = [_img_name(i.get("src", "") or i.get("data-src", "")) for i in no_alt]
-    missing_alt_files = [f for f in missing_alt_files if f]
+    missing_alt_files = _img_files(no_alt)
     if all_imgs and not no_alt:
         score += 10; positives.append("All images have alt text")
     elif no_alt:
@@ -724,9 +801,14 @@ def analyze_performance(fetch_result: dict, soup: BeautifulSoup) -> dict:
         score += 20; positives.append("Images appear optimized")
     else:
         score += 8
+        # List the actual files so the fix is concrete, not "convert all images".
+        _files = _img_files(unoptimized)
+        _shown = ", ".join(_files[:6]) or "(see page source)"
+        _more = f" +{len(_files) - 6} more" if len(_files) > 6 else ""
         issues.append({"severity": "medium", "issue": f"{len(unoptimized)} images not in modern WebP/AVIF format",
-                       "fix": "Convert all images to WebP format.",
-                       "impact_key": "unoptimized_images"})
+                       "fix": "Convert these to WebP/AVIF (e.g. via Squoosh or an image CDN) to cut load time.",
+                       "impact_key": "unoptimized_images",
+                       "evidence": f"Non-optimised images: {_shown}{_more}"})
 
     cache_headers = fetch_result.get("headers", {})
     cache_control = cache_headers.get("cache-control", cache_headers.get("Cache-Control", ""))
