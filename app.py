@@ -353,6 +353,7 @@ issues    = audit["all_issues"]
 positives = audit.get("all_positives", [])
 services  = audit.get("recommended_services", [])
 contact   = audit.get("contact_details", {})
+detected  = audit.get("detected", {})
 btype     = audit.get("business_type", "default")
 cex       = audit.get("customer_expectations", {})
 
@@ -442,6 +443,46 @@ with tab_overview:
 
     st.markdown('<div class="ryo-divider"></div>', unsafe_allow_html=True)
 
+    # ── What the tool actually detected (evidence) ──
+    if detected:
+        st.markdown('<div class="ryo-section-title">What the Tool Detected</div>', unsafe_allow_html=True)
+        st.markdown('<div class="ryo-section-sub">The concrete evidence behind the scores above</div>', unsafe_allow_html=True)
+
+        def _fact(label, value):
+            shown = value if value else "—"
+            vcolor = "#0F172A" if value else "#94A3B8"
+            return (f'<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:0;'
+                    f'padding:12px 16px;margin-bottom:8px">'
+                    f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:9px;font-weight:700;'
+                    f'color:#64748B;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:5px">{label}</div>'
+                    f'<div style="font-size:13px;color:{vcolor};word-break:break-word">{shown}</div></div>')
+
+        title_v = detected.get("title", "")
+        phone_v = detected.get("phone_number", "")
+        if phone_v:
+            phone_v += " · tap-to-call ✓" if detected.get("tel_link") else " · not a tel: link ✗"
+        ctas_v = ", ".join(f'"{c}"' for c in detected.get("ctas_found", [])[:5])
+        social_v = ", ".join(detected.get("social_platforms", []))
+        reviews_v = ", ".join(detected.get("review_sources", []))
+        imgs_missing = detected.get("images_missing_alt", [])
+        imgs_v = (f"{len(imgs_missing)} of {detected.get('total_images', 0)} missing alt: "
+                  + ", ".join(imgs_missing[:5])) if imgs_missing else \
+                 (f"All {detected.get('total_images', 0)} images have alt text" if detected.get("total_images") else "")
+
+        colL, colR = st.columns(2)
+        with colL:
+            st.markdown(_fact("Title tag", title_v), unsafe_allow_html=True)
+            st.markdown(_fact("Phone number", phone_v), unsafe_allow_html=True)
+            st.markdown(_fact("Email address", detected.get("email_address", "")), unsafe_allow_html=True)
+            st.markdown(_fact("Images missing alt", imgs_v), unsafe_allow_html=True)
+        with colR:
+            st.markdown(_fact("CTAs detected", ctas_v), unsafe_allow_html=True)
+            st.markdown(_fact("Social profiles", social_v), unsafe_allow_html=True)
+            st.markdown(_fact("Review sources", reviews_v), unsafe_allow_html=True)
+            st.markdown(_fact("Meta description", detected.get("meta_description", "")), unsafe_allow_html=True)
+
+        st.markdown('<div class="ryo-divider"></div>', unsafe_allow_html=True)
+
     st.markdown('<div class="ryo-section-title">Score Breakdown</div>', unsafe_allow_html=True)
     score_labels = {
         "seo": "On-Page SEO", "contact": "Contact Info",
@@ -506,6 +547,16 @@ with tab_issues:
             col_a, col_b = st.columns([4, 1])
             with col_a:
                 st.markdown(f"**Category:** `{issue.get('category', '')}`")
+                evidence = issue.get("evidence", "")
+                if evidence:
+                    st.markdown(f"""
+                    <div style="margin:2px 0 12px;background:#F8FAFC;border:1px solid #E2E8F0;
+                      border-left:3px solid #1D4ED8;border-radius:0;padding:10px 14px">
+                      <span style="font-family:'JetBrains Mono',monospace;font-size:9px;
+                        font-weight:700;color:#1D4ED8;letter-spacing:0.1em">🔍 WHAT THE TOOL FOUND</span><br>
+                      <span style="font-size:12.5px;color:#334155;word-break:break-word">{evidence}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
                 st.markdown(f"**Fix:** {issue.get('fix', '')}")
                 if impact:
                     st.markdown(f"""
@@ -532,10 +583,13 @@ with tab_contact:
     st.markdown('<div class="ryo-section-title">Contact & Lead Capture</div>', unsafe_allow_html=True)
     st.markdown('<div class="ryo-section-sub">How well this site captures potential customers</div>', unsafe_allow_html=True)
 
+    _phone = detected.get("phone_number", "")
+    _email = detected.get("email_address", "")
+
     contact_checks = [
-        (contact.get("phone_found"),   "Phone number visible on page"),
-        (contact.get("tel_link"),      "Phone is tap-to-call on mobile"),
-        (contact.get("email_found"),   "Email address visible"),
+        (contact.get("phone_found"),   "Phone number visible" + (f" — {_phone}" if _phone else "")),
+        (contact.get("tel_link"),      "Phone is tap-to-call (tel: link)"),
+        (contact.get("email_found"),   "Email address visible" + (f" — {_email}" if _email else "")),
         (contact.get("contact_form"),  "Contact / enquiry form present"),
         (contact.get("address_found"), "Physical address listed"),
         (contact.get("google_maps"),   "Google Maps embedded"),

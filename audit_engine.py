@@ -193,6 +193,50 @@ def fetch_page(url: str) -> dict:
     return max(candidates, key=lambda r: len(r["html"]))
 
 
+# ─── EVIDENCE HELPERS ───────────────────────────────────────────────────────
+
+def _img_name(src: str) -> str:
+    """Filename from an <img> src (strip query/hash and path) for evidence display."""
+    src = (src or "").split("?")[0].split("#")[0].rstrip("/")
+    name = src.rsplit("/", 1)[-1]
+    return name if name and "." in name else src[:60]
+
+
+def _clean_phone(p: str) -> str:
+    """Tidy a detected phone string for display."""
+    return re.sub(r'\s+', ' ', str(p)).strip()
+
+
+def _best_display_phone(candidates: list) -> str:
+    """Pick the most phone-like candidate for DISPLAY only (never affects scoring).
+    The loose scoring regex can match CSS/SVG coordinates like '225.8 468.2-2.5';
+    this ranks candidates so the evidence shows a real number instead of junk."""
+    best, best_score = "", -1
+    for c in candidates:
+        s = _clean_phone(c)
+        digits = re.sub(r'\D', '', s)
+        if not (9 <= len(digits) <= 14):
+            continue
+        sc = 0
+        if s[:1] in "+(0":
+            sc += 2
+        if "." not in s:            # dots usually mean coordinates/decimals, not phones
+            sc += 3
+        if len(digits) in (10, 11):
+            sc += 2
+        if re.search(r'[A-Za-z]', s):
+            sc -= 6
+        if re.search(r'\.\d(\D|$)', s):   # ".8 " / ".5-" = SVG/coord noise
+            sc -= 5
+        if len(set(digits)) <= 2:         # 000-000-0000 / 111-1111 = placeholders
+            sc -= 8
+        if re.search(r'0123456|1234567|1111111|0000000', digits):
+            sc -= 8
+        if sc > best_score:
+            best, best_score = s, sc
+    return best
+
+
 # ─── CONTACT ANALYSIS (regex baseline) ──────────────────────────────────────
 
 def analyze_contact(soup: BeautifulSoup, raw_html: str = "") -> dict:
@@ -232,21 +276,27 @@ def analyze_contact(soup: BeautifulSoup, raw_html: str = "") -> dict:
     phones = list(set(phones_in_text + tel_hrefs + phones_in_raw))
     phones = [p for p in phones if not re.match(r'^20\d\d', p.strip())]
 
+    # Pick the cleanest real-looking number for display (tel: links preferred).
+    best_phone = _best_display_phone(tel_hrefs + phones)
+    has_tel = bool(tel_links or tel_in_raw)
+
     if phones:
         score += 30; positives.append("Phone number found")
     else:
         issues.append({"severity": "critical",
                        "issue": "No phone number found on the page",
                        "fix": "Add your phone number to the header AND footer. Make it a clickable tel: link for mobile users.",
-                       "impact_key": "no_phone"})
+                       "impact_key": "no_phone",
+                       "evidence": "No phone number or tel: link detected in the page or contact pages."})
 
-    if tel_links or tel_in_raw:
+    if has_tel:
         score += 10; positives.append("Phone is clickable (tel: link)")
     elif phones:
         issues.append({"severity": "medium",
                        "issue": "Phone number exists but is NOT clickable on mobile",
                        "fix": "Wrap your phone number in <a href='tel:+1...'> so mobile visitors can tap-to-call instantly.",
-                       "impact_key": "no_tel_link"})
+                       "impact_key": "no_tel_link",
+                       "evidence": f"Number on page: {best_phone} — but no <a href=\"tel:\"> link."})
 
     # ── Email ──
     emails_in_text = [e for e in email_pattern.findall(html_text)
@@ -259,13 +309,18 @@ def analyze_contact(soup: BeautifulSoup, raw_html: str = "") -> dict:
     if "__cf_email__" in raw or "email-protection" in raw:
         emails.append("cloudflare-protected-email@found.com")
 
+    # A real address for display (hide the internal cloudflare placeholder).
+    display_emails = [e for e in emails if "cloudflare-protected-email" not in e]
+    best_email = display_emails[0] if display_emails else ("(Cloudflare-protected email)" if emails else "")
+
     if emails:
         score += 15; positives.append("Email address found")
     else:
         issues.append({"severity": "medium",
                        "issue": "No email address visible on the site",
                        "fix": "Add a contact email address. Use a professional domain email (you@yourbusiness.com) not Gmail or Hotmail.",
-                       "impact_key": "no_email"})
+                       "impact_key": "no_email",
+                       "evidence": "No email address or mailto: link detected."})
 
     # ── Contact form ──
     forms = soup.find_all("form")
@@ -328,7 +383,8 @@ def analyze_contact(soup: BeautifulSoup, raw_html: str = "") -> dict:
     return {"score": min(score, 100), "issues": issues, "positives": positives,
             "details": {"phone_found": bool(phones), "email_found": bool(emails),
                         "contact_form": has_form, "address_found": has_address,
-                        "google_maps": has_map, "tel_link": bool(tel_links or tel_in_raw)}}
+                        "google_maps": has_map, "tel_link": has_tel,
+                        "phone_number": best_phone, "email_address": best_email}}
 
 
 # ─── CTA ANALYSIS (regex baseline) ──────────────────────────────────────────
@@ -352,22 +408,25 @@ def analyze_cta(soup: BeautifulSoup, raw_html: str = "") -> dict:
         if any(kw in text for kw in cta_keywords) and len(text) > 2 and len(text) < 50:
             cta_found.append(b.get_text(strip=True))
 
+    _cta_list = list(dict.fromkeys(cta_found))  # de-dupe, keep order
+    _cta_evidence = "CTAs detected: " + ", ".join(f'"{c}"' for c in _cta_list[:6]) if _cta_list else ""
     if len(cta_found) >= 3:
         score += 50; positives.append(f"{len(cta_found)} CTAs found throughout page")
     elif len(cta_found) == 2:
         score += 35
         issues.append({"severity": "medium", "issue": "Only 2 CTAs found — add more throughout the page",
                        "fix": "Place CTAs at top, middle, and bottom. Repeat your primary CTA at least 3 times on a homepage.",
-                       "impact_key": "weak_cta"})
+                       "impact_key": "weak_cta", "evidence": _cta_evidence})
     elif len(cta_found) == 1:
         score += 20
         issues.append({"severity": "critical", "issue": "Only 1 CTA found — 70% of small business sites have this problem",
                        "fix": "Add clear CTA buttons at the top (hero section), after every service, and in the footer.",
-                       "impact_key": "no_cta"})
+                       "impact_key": "no_cta", "evidence": _cta_evidence})
     else:
         issues.append({"severity": "critical", "issue": "No call-to-action buttons found — visitors have no clear next step",
                        "fix": "Add prominent CTA buttons: 'Book Now', 'Get a Free Quote', 'Call Us'. Highest-ROI change you can make.",
-                       "impact_key": "no_cta"})
+                       "impact_key": "no_cta",
+                       "evidence": "No action-oriented buttons/links detected (e.g. 'Book Now', 'Get a Quote')."})
 
     # Clickable phone as CTA
     tel_links = soup.find_all("a", href=re.compile(r"^tel:"))
@@ -456,15 +515,28 @@ def analyze_trust(soup: BeautifulSoup, raw_html: str = "") -> dict:
                        "fix": "Display any professional licences, industry memberships, awards, or satisfaction guarantees.",
                        "impact_key": "no_trust_badges"})
 
+    # Which review sources were detected (for evidence display).
+    _rev_names = {"trustpilot": "Trustpilot", "reviews.io": "Reviews.io", "feefo": "Feefo",
+                  "yotpo": "Yotpo", "judge.me": "Judge.me", "google review": "Google Reviews",
+                  "trustindex": "Trustindex", "testimonial": "on-page testimonials"}
+    review_sources = sorted({name for key, name in _rev_names.items() if key in raw})
+    if has_google_review and "Google Reviews" not in review_sources:
+        review_sources.append("Google Reviews")
+
     # Social media
     social_pattern = re.compile(r'facebook\.com|instagram\.com|twitter\.com|x\.com|linkedin\.com|youtube\.com|tiktok\.com|pinterest\.com')
+    _social_map = {"facebook.com": "Facebook", "instagram.com": "Instagram", "twitter.com": "Twitter/X",
+                   "x.com": "Twitter/X", "linkedin.com": "LinkedIn", "youtube.com": "YouTube",
+                   "tiktok.com": "TikTok", "pinterest.com": "Pinterest"}
+    social_platforms = sorted({name for dom, name in _social_map.items() if dom in raw})
     has_social = bool(social_pattern.search(raw))
     if has_social:
         score += 15; positives.append("Social media links present")
     else:
         issues.append({"severity": "medium", "issue": "No social media links — isolated from your biggest free marketing channels",
                        "fix": "Add visible links to your active social profiles (Facebook, Instagram).",
-                       "impact_key": "no_social"})
+                       "impact_key": "no_social",
+                       "evidence": "No links to Facebook, Instagram, LinkedIn, YouTube, TikTok or X detected."})
 
     # About section
     about_keywords = ["about us", "our team", "meet the team", "our story", "who we are",
@@ -480,7 +552,9 @@ def analyze_trust(soup: BeautifulSoup, raw_html: str = "") -> dict:
                        "fix": "Add a short About section with your story, your team, or why you started the business.",
                        "impact_key": "no_about"})
 
-    return {"score": min(score, 100), "issues": issues, "positives": positives}
+    return {"score": min(score, 100), "issues": issues, "positives": positives,
+            "review_sources": review_sources, "social_platforms": social_platforms,
+            "has_google_reviews": has_google_review}
 
 
 # ─── SEO ANALYSIS ────────────────────────────────────────────────────────────
@@ -496,10 +570,12 @@ def analyze_seo(soup: BeautifulSoup, url: str) -> dict:
     elif title:
         score += 10
         issues.append({"severity": "medium", "issue": f"Page title is {len(title)} chars — outside the 10–60 range Google recommends",
-                       "fix": "Rewrite the title tag to clearly describe the business in 10–60 characters.", "impact_key": "seo_title"})
+                       "fix": "Rewrite the title tag to clearly describe the business in 10–60 characters.", "impact_key": "seo_title",
+                       "evidence": f'Title tag ({len(title)} chars): "{title}"'})
     else:
         issues.append({"severity": "critical", "issue": "No page title found — you are invisible in Google search results",
-                       "fix": "Add a <title> tag immediately.", "impact_key": "seo_title"})
+                       "fix": "Add a <title> tag immediately.", "impact_key": "seo_title",
+                       "evidence": "No <title> tag found in the page <head>."})
 
     meta = soup.find("meta", attrs={"name": "description"})
     desc = meta.get("content", "").strip() if meta else ""
@@ -508,30 +584,40 @@ def analyze_seo(soup: BeautifulSoup, url: str) -> dict:
     elif desc:
         score += 7
         issues.append({"severity": "low", "issue": f"Meta description is {len(desc)} chars — should be 80–160",
-                       "fix": "Rewrite your meta description to 120–155 characters.", "impact_key": "seo_meta"})
+                       "fix": "Rewrite your meta description to 120–155 characters.", "impact_key": "seo_meta",
+                       "evidence": f'Meta description ({len(desc)} chars): "{desc}"'})
     else:
         issues.append({"severity": "medium", "issue": "Missing meta description — Google writes one for you (usually badly)",
-                       "fix": "Add a compelling 120–155 character meta description.", "impact_key": "seo_meta"})
+                       "fix": "Add a compelling 120–155 character meta description.", "impact_key": "seo_meta",
+                       "evidence": "No <meta name=\"description\"> tag found."})
 
     h1s = soup.find_all("h1")
+    h1_texts = [h.get_text(" ", strip=True) for h in h1s if h.get_text(strip=True)]
     if len(h1s) == 1:
         score += 15; positives.append("One clean H1 heading")
     elif len(h1s) > 1:
         score += 7
         issues.append({"severity": "low", "issue": f"{len(h1s)} H1 headings found — Google expects only one per page",
-                       "fix": "Keep one H1 that describes the page. Convert extras to H2 or H3.", "impact_key": "seo_h1"})
+                       "fix": "Keep one H1 that describes the page. Convert extras to H2 or H3.", "impact_key": "seo_h1",
+                       "evidence": "H1s found: " + " | ".join(f'"{t}"' for t in h1_texts[:5])})
     else:
         issues.append({"severity": "critical", "issue": "No H1 heading — Google has no clear signal about what your page is about",
-                       "fix": "Add one H1 heading that clearly states your main service or product.", "impact_key": "seo_h1"})
+                       "fix": "Add one H1 heading that clearly states your main service or product.", "impact_key": "seo_h1",
+                       "evidence": "No <h1> heading found on the page."})
 
     all_imgs = soup.find_all("img")
     no_alt = [i for i in all_imgs if not i.get("alt", "").strip()]
+    missing_alt_files = [_img_name(i.get("src", "") or i.get("data-src", "")) for i in no_alt]
+    missing_alt_files = [f for f in missing_alt_files if f]
     if all_imgs and not no_alt:
         score += 10; positives.append("All images have alt text")
     elif no_alt:
         score += max(0, 10 - len(no_alt) * 2)
+        _shown = ", ".join(missing_alt_files[:6]) or "(inline/background images)"
+        _more = f" +{len(missing_alt_files) - 6} more" if len(missing_alt_files) > 6 else ""
         issues.append({"severity": "medium", "issue": f"{len(no_alt)} of {len(all_imgs)} images missing alt text",
-                       "fix": "Add descriptive alt text to every image.", "impact_key": "seo_images"})
+                       "fix": "Add descriptive alt text to every image.", "impact_key": "seo_images",
+                       "evidence": f"Images without alt text: {_shown}{_more}"})
 
     if soup.find("link", rel="canonical"):
         score += 5; positives.append("Canonical tag present")
@@ -554,7 +640,9 @@ def analyze_seo(soup: BeautifulSoup, url: str) -> dict:
                        "fix": "Add og:title, og:description, and og:image tags.", "impact_key": "seo_og"})
 
     return {"score": min(score, 100), "issues": issues, "positives": positives,
-            "title": title, "meta_description": desc, "h1_count": len(h1s)}
+            "title": title, "meta_description": desc, "h1_count": len(h1s),
+            "h1_texts": h1_texts, "total_images": len(all_imgs),
+            "images_missing_alt": missing_alt_files}
 
 
 # ─── SECURITY ANALYSIS ──────────────────────────────────────────────────────
@@ -888,9 +976,31 @@ def run_audit(url: str) -> dict:
             "security": security["score"], "performance": perf["score"],
             "mobile": mobile["score"],
         },
-        "seo_details": {"title": seo["title"], "meta_description": seo["meta_description"], "h1_count": seo["h1_count"]},
+        "seo_details": {"title": seo["title"], "meta_description": seo["meta_description"],
+                        "h1_count": seo["h1_count"], "h1_texts": seo.get("h1_texts", []),
+                        "total_images": seo.get("total_images", 0),
+                        "images_missing_alt": seo.get("images_missing_alt", [])},
         "contact_details": contact.get("details", {}),
         "ctas_found": cta.get("ctas_found", []),
+        # ── Evidence facts: exactly what the tool detected, for the report/UI. ──
+        "detected": {
+            "title": seo["title"],
+            "meta_description": seo["meta_description"],
+            "h1_count": seo["h1_count"],
+            "h1_texts": seo.get("h1_texts", []),
+            "total_images": seo.get("total_images", 0),
+            "images_missing_alt": seo.get("images_missing_alt", []),
+            "phone_number": contact.get("details", {}).get("phone_number", ""),
+            "email_address": contact.get("details", {}).get("email_address", ""),
+            "tel_link": contact.get("details", {}).get("tel_link", False),
+            "contact_form": contact.get("details", {}).get("contact_form", False),
+            "address_found": contact.get("details", {}).get("address_found", False),
+            "ctas_found": cta.get("ctas_found", []),
+            "social_platforms": trust.get("social_platforms", []),
+            "review_sources": trust.get("review_sources", []),
+            "is_https": fetch["is_https"],
+            "response_time": fetch["response_time"],
+        },
         "all_issues": all_issues,
         "all_positives": all_positives,
         "psi": psi,
