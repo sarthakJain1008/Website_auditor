@@ -99,18 +99,45 @@ def _fetch_with_browser(url: str) -> dict:
         except Exception:
             size_kb = round(len(html.encode()) / 1024, 1)
 
-        # Pull a few key subpages so contact/trust info living off the homepage
-        # (e.g. /contact, /enquiry) is still seen. Rendered, so JS content counts.
+        # Pull key subpages (contact/about) so info living off the homepage is
+        # seen. CRITICAL: Cloudflare rate-limits reused sessions, so navigating
+        # subpages in the homepage's context returns 403 challenge shells. Each
+        # subpage is therefore fetched in a FRESH context (new session), which
+        # passes the challenge like a first visit. Capped to keep audits fast.
         base = final_url.rstrip("/")
-        extra_html = ""
+        seen_urls, extra_html, collected = {base}, "", 0
         for path in _SUBPATHS:
+            if collected >= 2:            # 2 good contact pages is plenty
+                break
+            sc = None
             try:
-                page.goto(base + path, wait_until="domcontentloaded", timeout=12000)
-                sub = page.content()
-                if sub and len(sub) > 800:
+                sc = browser.new_context(user_agent=_DESKTOP_UA,
+                                         viewport={"width": 1366, "height": 900}, locale="en-GB")
+                sp = sc.new_page()
+                r2 = sp.goto(base + path, wait_until="domcontentloaded", timeout=18000)
+                try:
+                    sp.wait_for_load_state("networkidle", timeout=6000)
+                except Exception:
+                    pass
+                final = sp.url.rstrip("/")
+                sub = sp.content()
+                low = sub[:2500].lower()
+                is_challenge = any(m in low for m in ("just a moment", "checking your browser",
+                                                      "cf-challenge", "enable javascript to"))
+                ok = (sub and len(sub) > 8000 and final not in seen_urls
+                      and (r2 is None or r2.status < 400) and not is_challenge)
+                if ok:
+                    seen_urls.add(final)
                     extra_html += " " + sub
+                    collected += 1
             except Exception:
                 pass
+            finally:
+                if sc is not None:
+                    try:
+                        sc.close()
+                    except Exception:
+                        pass
         browser.close()
 
     return {
@@ -196,10 +223,16 @@ def fetch_page(url: str) -> dict:
 # ─── EVIDENCE HELPERS ───────────────────────────────────────────────────────
 
 def _img_name(src: str) -> str:
-    """Filename from an <img> src (strip query/hash and path) for evidence display."""
+    """A readable label for an <img> src. A clean filename when there is one;
+    otherwise the CDN host (base64 / query-hashed CDN paths have no filename and
+    would just clutter the evidence with an unreadable blob)."""
     src = (src or "").split("?")[0].split("#")[0].rstrip("/")
     name = src.rsplit("/", 1)[-1]
-    return name if name and "." in name else src[:60]
+    # a real, short filename with an image-y extension
+    if name and "." in name and len(name) <= 45 and not name.startswith("ey"):
+        return name
+    host = urlparse(src if "//" in src else "http://" + src).netloc.replace("www.", "")
+    return host or name[:40]
 
 
 _TRACKER_SIGNS = ["facebook.com/tr", "/tr?", "google-analytics", "googletagmanager",
@@ -249,34 +282,61 @@ def _clean_ctas(ctas: list) -> list:
     return clean[:6]
 
 
-def _best_display_phone(candidates: list) -> str:
-    """Pick the most phone-like candidate for DISPLAY only (never affects scoring).
-    The loose scoring regex can match CSS/SVG coordinates like '225.8 468.2-2.5';
-    this ranks candidates so the evidence shows a real number instead of junk."""
-    best, best_score = "", -1
-    for c in candidates:
-        s = _clean_phone(c)
-        digits = re.sub(r'\D', '', s)
-        if not (9 <= len(digits) <= 14):
-            continue
-        sc = 0
-        if s[:1] in "+(0":
-            sc += 2
-        if "." not in s:            # dots usually mean coordinates/decimals, not phones
-            sc += 3
-        if len(digits) in (10, 11):
-            sc += 2
-        if re.search(r'[A-Za-z]', s):
-            sc -= 6
-        if re.search(r'\.\d(\D|$)', s):   # ".8 " / ".5-" = SVG/coord noise
-            sc -= 5
-        if len(set(digits)) <= 2:         # 000-000-0000 / 111-1111 = placeholders
-            sc -= 8
-        if re.search(r'0123456|1234567|1111111|0000000', digits):
-            sc -= 8
-        if sc > best_score:
-            best, best_score = s, sc
-    return best
+# A phone number that sits right after a phone-context label. High precision —
+# this is what a human reads as THE phone, not a random price/coordinate.
+# STRONG = the business's own customer-facing label ("Phone Us", "Call us");
+# WEAK = generic ("Tel:", "call") which on some sites points at 3rd-party lines.
+_NUM = r'(\+?\(?\d[\d\s().\-]{7,14}\d)'
+_PHONE_STRONG = re.compile(
+    r'\b(?:phone\s*us|call\s*us(?:\s*on)?|call\s*now|phone\s*(?:number)?\s*[:.]?|telephone)'
+    r'[^0-9+]{0,20}' + _NUM, re.I)
+_PHONE_LABEL = re.compile(
+    r'\b(?:phone|telephone|tel|call|mobile|hotline|contact\s*number)'
+    r'[^0-9+]{0,20}' + _NUM, re.I)
+
+
+def _valid_phone(cand: str):
+    """Return a cleaned number if it looks like a real phone, else None."""
+    s = _clean_phone(cand)
+    d = re.sub(r'\D', '', s)
+    if not (9 <= len(d) <= 13):
+        return None
+    if len(set(d)) <= 2:                       # 000-000-0000 / 111-1111 placeholders
+        return None
+    if d.startswith("00") and not s.startswith("+"):   # "0 0 1230…" junk, not a real prefix
+        return None
+    if re.search(r'\.\d(\D|$)', s):            # ".8 " / ".5-" = SVG/coord noise
+        return None
+    if re.search(r'[A-Za-z]', s):
+        return None
+    return s
+
+
+def _extract_display_phone(full_text: str, tel_hrefs: list) -> str:
+    """High-confidence phone for DISPLAY (never affects scoring):
+    1) a tel: link value, else 2) a number next to a phone label. Else "" —
+    we'd rather show nothing than a wrong number scraped from page noise."""
+    # 1) A tel: link is the most reliable signal — the business's own click-to-call.
+    for t in tel_hrefs:
+        v = _valid_phone(t)
+        if v:
+            return v
+    txt = full_text or ""
+    # 2) Gather numbers that sit next to a phone label (excludes prices/codes).
+    labeled = {}
+    for rx in (_PHONE_STRONG, _PHONE_LABEL):
+        for m in rx.finditer(txt):
+            v = _valid_phone(m.group(1))
+            if v:
+                labeled.setdefault(re.sub(r'\D', '', v), v)
+    if not labeled:
+        return ""
+    # 3) GENERAL rule: the real main number repeats across header/footer/contact,
+    #    while incidental third-party numbers (e.g. a complaints line) appear once.
+    #    So pick the labelled number that occurs most often on the page.
+    digits_only = re.sub(r'\D', '', txt)
+    best = max(labeled, key=lambda k: (digits_only.count(k), -len(k)))
+    return labeled[best]
 
 
 _SOCIAL_DOMAINS = {"facebook.com": "Facebook", "instagram.com": "Instagram",
@@ -352,8 +412,10 @@ def analyze_contact(soup: BeautifulSoup, raw_html: str = "") -> dict:
     phones = list(set(phones_in_text + tel_hrefs + phones_in_raw))
     phones = [p for p in phones if not re.match(r'^20\d\d', p.strip())]
 
-    # Pick the cleanest real-looking number for display (tel: links preferred).
-    best_phone = _best_display_phone(tel_hrefs + phones)
+    # High-confidence number for DISPLAY: tel: link, or a number next to a phone
+    # label in the full (home + contact page) visible text. Never affects scoring.
+    full_text = BeautifulSoup(raw, "lxml").get_text(" ", strip=True) if raw else html_text
+    best_phone = _extract_display_phone(full_text, tel_hrefs)
     has_tel = bool(tel_links or tel_in_raw)
 
     if phones:
@@ -385,9 +447,20 @@ def analyze_contact(soup: BeautifulSoup, raw_html: str = "") -> dict:
     if "__cf_email__" in raw or "email-protection" in raw:
         emails.append("cloudflare-protected-email@found.com")
 
-    # A real address for display (hide the internal cloudflare placeholder).
-    display_emails = [e for e in emails if "cloudflare-protected-email" not in e]
-    best_email = display_emails[0] if display_emails else ("(Cloudflare-protected email)" if emails else "")
+    # Pick a sensible email for DISPLAY (deterministic; never affects scoring):
+    # prefer a real mailto: link, drop system addresses, and sort for stability.
+    _EMAIL_JUNK = ("noreply", "no-reply", "donotreply", "do-not-reply", "sentry",
+                   "wixpress", "@sentry", "example.", "@2x", "u003e")
+    _clean = sorted({e for e in emails
+                     if "cloudflare-protected-email" not in e
+                     and not any(j in e.lower() for j in _EMAIL_JUNK)})
+    best_email = ""
+    for e in mailto_hrefs:                       # a mailto: link = real contact intent
+        if e in _clean:
+            best_email = e
+            break
+    if not best_email:
+        best_email = _clean[0] if _clean else ("(Cloudflare-protected email)" if emails else "")
 
     if emails:
         score += 15; positives.append("Email address found")
