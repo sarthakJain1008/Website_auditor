@@ -341,6 +341,19 @@ if run_btn and url_input.strip():
                     f"Couldn't reach <code>{url}</code>",
                     f"{err}<br><br>Check the spelling of the domain and that the site is online.",
                     "#dc2626")
+
+            # Technical details — what the fetcher actually received. Lets us
+            # diagnose a failure from the live app instead of guessing.
+            _diag = audit.get("diag")
+            if _diag:
+                with st.expander("Technical details"):
+                    st.markdown(
+                        f"- **HTTP status:** `{_diag.get('status')}`\n"
+                        f"- **Fetched via:** `{_diag.get('method')}`\n"
+                        f"- **Page size:** `{_diag.get('size_kb')} KB`\n"
+                        f"- **Page title:** `{_diag.get('title')}`\n"
+                        f"- **Final URL:** `{_diag.get('final_url')}`"
+                    )
             st.stop()
 
         progress.progress(70, text="◌  Building insights & report...")

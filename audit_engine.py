@@ -108,12 +108,23 @@ _BLOCK_TITLE_SIGNS = (
     "request unsuccessful", "bot verification", "ddos protection", "please wait",
     "checking your browser", "unusual traffic", "captcha", "site is protected",
 )
+# STRONG body markers — phrases that essentially never appear as real homepage
+# content, so they flag a block regardless of page size. Imperva/Incapsula and
+# generic WAF "Access Denied" interstitials are often served with HTTP 200, so
+# status alone misses them — and they must read as BLOCKED, not "parked".
+_BLOCK_BODY_STRONG = (
+    "access denied", "you don't have permission to access", "you have been blocked",
+    "sorry, you have been blocked", "powered by imperva", "/cdn-cgi/challenge-platform/",
+    "cf-challenge", "_incapsula_", "px-captcha", "perimeterx", "datadome", "kasada",
+)
+# WEAK markers — trusted only when the page is thin OR a WAF is fingerprinted in
+# headers, so a normal page merely mentioning one in its footer isn't flagged.
 _BLOCK_BODY_SIGNS = (
     "checking your browser before accessing", "enable javascript and cookies to continue",
-    "/cdn-cgi/challenge-platform/", "cf-challenge", "cf_chl_", "_incapsula_",
-    "please enable cookies", "ddos protection by", "performance & security by cloudflare",
-    "verify you are human", "px-captcha", "perimeterx", "datadome", "kasada",
-    "incident id", "this request was blocked", "your request has been blocked",
+    "cf_chl_", "please enable cookies", "ddos protection by",
+    "performance & security by cloudflare", "verify you are human", "incident id",
+    "this request was blocked", "your request has been blocked", "request unsuccessful",
+    "reference #", "error code 15", "error code 16", "error code 1020", "unauthorized access",
 )
 
 
@@ -151,7 +162,11 @@ def _detect_block(fetch: dict):
     # 2. A challenge title is high-confidence even on HTTP 200 (JS shells return 200).
     if any(s in title for s in _BLOCK_TITLE_SIGNS):
         return {"vendor": vendor, "reason": f"challenge page (“{title[:50]}”)", "status": status}
-    # 3. Body challenge markers — trusted only when the page is thin (real content
+    # 3. Strong body markers ("Access Denied", vendor challenge scripts) — these
+    #    never appear on a real homepage, so they flag a block at any page size.
+    if any(s in low for s in _BLOCK_BODY_STRONG):
+        return {"vendor": vendor, "reason": "access blocked by security", "status": status}
+    # 4. Weak body markers — trusted only when the page is thin (real content
     #    wouldn't be) OR a known WAF is fingerprinted in the response headers, so a
     #    normal page merely mentioning "cloudflare" in its footer is not flagged.
     if any(s in low for s in _BLOCK_BODY_SIGNS) and (len(html) < 15000 or vendor):
@@ -491,23 +506,26 @@ def fetch_page(url: str) -> dict:
     if not candidates:
         return req_result  # carries the real error message
 
-    # Prefer any candidate that is NOT a block page; among those, most content.
-    unblocked = [r for r in candidates if not _detect_block(r)]
-    if unblocked:
-        return max(unblocked, key=lambda r: len(r["html"]))
+    # A candidate is usable only if it has REAL content AND isn't a block page.
+    # (Requiring size stops a thin 'Access Denied' shell that slipped past block
+    #  detection from being returned and later mislabelled as 'parked'.)
+    good = [r for r in candidates
+            if len(r.get("html", "")) >= _MIN_USABLE_HTML and not _detect_block(r)]
+    if good:
+        return max(good, key=lambda r: len(r["html"]))
 
-    # Everything our own fetchers got was a block page. Last resort: a paid
-    # residential-IP unblocker, IF one is configured (dormant otherwise).
+    # Nothing readable from our own fetchers. Last resort: a paid residential-IP
+    # unblocker, IF one is configured (dormant otherwise).
     ub = _fetch_with_unblocker(url)
     if ub and len(ub.get("html", "")) >= _MIN_USABLE_HTML and not _detect_block(ub):
         print(f"[fetch] recovered a blocked site via {ub['fetch_method']}")
         return ub
 
-    # Still blocked (no unblocker configured, or it also failed). Return the best
-    # shell but TAG it so run_audit refuses to score it and reports honestly.
+    # If ANY attempt was a real WAF/anti-bot block, report it honestly as blocked
+    # (never let it fall through to the 'parked/for sale' path).
     best = max(candidates, key=lambda r: len(r["html"]))
-    block = _detect_block(best) or {}
-    best["blocked"] = True
+    block = next((_detect_block(r) for r in candidates if _detect_block(r)), None) or {}
+    best["blocked"] = bool(block)
     best["block_vendor"] = block.get("vendor", "")
     best["block_reason"] = block.get("reason", "anti-bot protection")
     return best
@@ -1326,26 +1344,39 @@ def _merge_ai_results(regex_result: dict, ai_result: dict, category: str) -> dic
 
 # ─── MASTER RUNNER ───────────────────────────────────────────────────────────
 
+# HARD signs — unambiguous parking / for-sale pages. Always mean "not a real site".
 _PARKING_SIGNS = ["forsale", "godaddy.com/forsale", "sedoparking", "parkingcrew",
                   "bodis.com", "afternic", "hugedomains", "domain for sale",
-                  "buy this domain", "domain is for sale", "access denied",
-                  "this domain may be for sale",
-                  # Soft-404 / placeholder / not-yet-live pages: a 200 status but
-                  # no real business site to audit.
-                  "under construction", "coming soon", "site coming soon",
-                  "website coming soon", "account suspended", "site suspended",
-                  "this account has been suspended", "future home of",
-                  "default web page", "welcome to nginx", "apache2 ubuntu default",
-                  "site not found", "website disabled", "this site is temporarily unavailable"]
+                  "buy this domain", "domain is for sale",
+                  "this domain may be for sale"]
+
+# SOFT signs — placeholder / not-yet-live / server-default pages. These words can
+# ALSO appear in a real homepage (e.g. "new service coming soon" in a promo), so
+# they only count when the page is small. A full business homepage that merely
+# mentions them is NOT dead. (Gating these to thin pages fixes the false-positive
+# that mislabelled real sites like Auditel as "parked".)
+_DEAD_SIGNS = ["access denied", "under construction", "coming soon",
+               "site coming soon", "website coming soon", "account suspended",
+               "site suspended", "this account has been suspended", "future home of",
+               "default web page", "welcome to nginx", "apache2 ubuntu default",
+               "site not found", "website disabled", "this site is temporarily unavailable"]
 
 
 def _looks_parked_or_dead(fetch: dict) -> bool:
-    """True if the fetch is too thin to be a real site, or is a parking/for-sale page."""
+    """True if the fetch is too thin to be a real site, or is a parking/for-sale page.
+    WAF 'Access Denied' blocks are handled earlier by _detect_block, not here."""
     html = fetch.get("html", "") or ""
     if len(html) < 1000:  # a real business homepage is never this small
         return True
     blob = (fetch.get("final_url", "") + " " + html[:3000]).lower()
-    return any(sign in blob for sign in _PARKING_SIGNS)
+    # Hard parking/for-sale signs — unambiguous, always mean "not a real site".
+    if any(sign in blob for sign in _PARKING_SIGNS):
+        return True
+    # Soft placeholder signs count only on a SMALL page — a full real homepage
+    # that merely mentions "coming soon" in a promo is NOT dead.
+    if len(html) < 6000 and any(sign in blob for sign in _DEAD_SIGNS):
+        return True
+    return False
 
 
 def fetch_google_business(business_name: str, domain: str, hint: str = "") -> dict:
@@ -1414,8 +1445,16 @@ def run_audit(url: str) -> dict:
     """Run the full website audit — regex baseline + AI enhancement."""
     print(f"[Audit] Fetching: {url}")
     fetch = fetch_page(url)
+
+    # Diagnostics: exactly what the fetcher received. Surfaced on error screens so
+    # a failure can be diagnosed from the live app instead of guessing.
+    _m = re.search(r"<title[^>]*>(.*?)</title>", fetch.get("html", "") or "", re.I | re.S)
+    diag = {"status": fetch.get("status_code"), "size_kb": fetch.get("page_size_kb"),
+            "method": fetch.get("fetch_method"), "final_url": fetch.get("final_url"),
+            "title": (_m.group(1).strip()[:80] if _m else "(none)")}
+
     if fetch.get("error"):
-        return {"error": fetch["error"], "url": url}
+        return {"error": fetch["error"], "url": url, "diag": diag}
     if fetch.get("blocked"):
         vendor = fetch.get("block_vendor") or "a security / anti-bot service"
         reason = fetch.get("block_reason", "")
@@ -1424,10 +1463,12 @@ def run_audit(url: str) -> dict:
                           f"was run — scoring the block page would give false results. "
                           f"The site itself may be perfectly fine; try again later or from a "
                           f"residential connection."),
-                "url": url, "blocked": True, "block_vendor": fetch.get("block_vendor", "")}
+                "url": url, "blocked": True, "block_vendor": fetch.get("block_vendor", ""),
+                "diag": diag}
     if _looks_parked_or_dead(fetch):
-        return {"error": ("This site could not be loaded for a real audit — it looks offline, "
-                          "parked, for sale, or is blocking automated access."), "url": url}
+        return {"error": ("We couldn't read a real page here — the site may be blocking "
+                          "automated access, or the page is empty, parked, or not yet live."),
+                "url": url, "diag": diag}
 
     full_html = fetch.get("full_html", fetch["html"])
     soup = BeautifulSoup(fetch["html"], "lxml")
