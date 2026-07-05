@@ -308,17 +308,39 @@ if run_btn and url_input.strip():
             progress.empty()
             err = str(audit["error"])
             low = err.lower()
-            if any(w in low for w in ["parked", "offline", "for sale", "blocking", "could not be loaded"]):
-                st.warning(
-                    f"**No live website found at `{url}`.**\n\n"
-                    f"{err}\n\n"
-                    "This usually means the domain is parked, for sale, redirects to a holding page, "
-                    "or blocks automated visits — so there's nothing real to audit. "
-                    "Double-check the address, or try the exact URL a customer would land on."
-                )
+
+            # High-contrast card (dark text on white) — the default st.warning box
+            # renders pale text on pale yellow and is unreadable in this theme.
+            def _notice(title, body, accent):
+                st.markdown(
+                    f'<div style="background:#FFFFFF;border:1px solid #E2E8F0;'
+                    f'border-left:4px solid {accent};border-radius:6px;padding:18px 22px;margin-top:10px">'
+                    f'<div style="font-size:15px;font-weight:700;color:#0F172A;margin-bottom:8px">{title}</div>'
+                    f'<div style="font-size:13.5px;color:#334155;line-height:1.7">{body}</div></div>',
+                    unsafe_allow_html=True)
+
+            if audit.get("blocked"):
+                vendor = audit.get("block_vendor") or "security / anti-bot protection"
+                _notice(
+                    f"🛡️ <code>{url}</code> is live — but it blocks automated audits",
+                    f"This site is protected by <b>{vendor}</b>, which stops bots (including this tool) "
+                    f"from reading the page. <b>The business itself is perfectly fine</b> — we just can't "
+                    f"audit it automatically from a datacenter connection.<br><br>"
+                    f"A residential unblocker would get through; otherwise this particular site can't be "
+                    f"audited automatically.",
+                    "#d97706")
+            elif any(w in low for w in ["parked", "offline", "for sale", "could not be loaded"]):
+                _notice(
+                    f"No live website found at <code>{url}</code>",
+                    f"{err}<br><br>This usually means the domain is parked, for sale, or redirects to a "
+                    f"holding page — so there's nothing real to audit. Double-check the address, or try "
+                    f"the exact URL a customer would land on.",
+                    "#d97706")
             else:
-                st.error(f"**Couldn't reach `{url}`.**\n\n{err}\n\n"
-                         "Check the spelling of the domain and that the site is online.")
+                _notice(
+                    f"Couldn't reach <code>{url}</code>",
+                    f"{err}<br><br>Check the spelling of the domain and that the site is online.",
+                    "#dc2626")
             st.stop()
 
         progress.progress(70, text="◌  Building insights & report...")
