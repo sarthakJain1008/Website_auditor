@@ -446,7 +446,11 @@ with tab_overview:
     # ── What the tool actually detected (evidence) ──
     if detected:
         st.markdown('<div class="ryo-section-title">What the Tool Detected</div>', unsafe_allow_html=True)
-        st.markdown('<div class="ryo-section-sub">The concrete evidence behind the scores above</div>', unsafe_allow_html=True)
+        _pages_n = len(audit.get("pages_audited", []) or [])
+        _detected_sub = "The concrete evidence behind the scores above"
+        if _pages_n > 1:
+            _detected_sub += f" — across {_pages_n} pages of the site"
+        st.markdown(f'<div class="ryo-section-sub">{_detected_sub}</div>', unsafe_allow_html=True)
 
         def _fact(label, value):
             shown = value if value else "—"
@@ -481,6 +485,30 @@ with tab_overview:
             st.markdown(_fact("Review sources", reviews_v), unsafe_allow_html=True)
             st.markdown(_fact("Meta description", detected.get("meta_description", "")), unsafe_allow_html=True)
 
+        st.markdown('<div class="ryo-divider"></div>', unsafe_allow_html=True)
+
+    # ── Google Business Profile — only shown when Places data is present ──
+    _gb = audit.get("google_business", {})
+    if _gb and _gb.get("matched"):
+        st.markdown('<div class="ryo-section-title">Google Business Profile</div>', unsafe_allow_html=True)
+        st.markdown('<div class="ryo-section-sub">Live data from the business\'s Google listing</div>', unsafe_allow_html=True)
+        g1, g2, g3 = st.columns(3)
+        _rating = _gb.get("rating")
+        g1.metric("Google rating", f"{_rating}★" if _rating is not None else "—")
+        g2.metric("Reviews", _gb.get("review_count", 0))
+        g3.metric("Status", (_gb.get("business_status", "") or "—").replace("_", " ").title())
+        _grow = lambda label, val: st.markdown(
+            f'<div style="background:#FFFFFF;border:1px solid #E2E8F0;padding:12px 16px;margin-bottom:8px">'
+            f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:9px;font-weight:700;'
+            f'color:#64748B;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:5px">{label}</div>'
+            f'<div style="font-size:13px;color:#0F172A;word-break:break-word">{val}</div></div>',
+            unsafe_allow_html=True)
+        if _gb.get("address"):
+            _grow("Address (Google)", _gb["address"])
+        if _gb.get("phone"):
+            _grow("Phone (Google)", _gb["phone"])
+        if not _gb.get("confident"):
+            st.caption("Best match by name — verify this is the correct listing.")
         st.markdown('<div class="ryo-divider"></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="ryo-section-title">Score Breakdown</div>', unsafe_allow_html=True)

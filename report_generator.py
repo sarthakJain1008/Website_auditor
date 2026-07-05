@@ -105,6 +105,36 @@ def _build_detected(detected):
     return f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">{cards}</div>'
 
 
+# ─── GOOGLE BUSINESS PROFILE (only rendered when Places data is present) ─────
+
+def _build_google_business(gb):
+    """Real Google rating/reviews/hours. Returns '' when there's no data (e.g. no
+    GOOGLE_PLACES_API_KEY configured), so the section simply doesn't appear."""
+    if not gb or not gb.get("matched"):
+        return ""
+    rating = gb.get("rating")
+    rc = gb.get("review_count") or 0
+    star = f'{rating}&#9733;' if rating is not None else "&mdash;"
+    stat = (f'<div style="display:flex;gap:28px;flex-wrap:wrap;margin-bottom:14px">'
+            f'<div><div style="font-size:26px;font-weight:800;color:{INK};line-height:1">{star}</div>'
+            f'<div style="font-size:10px;color:{MUTE};text-transform:uppercase;letter-spacing:.06em;margin-top:4px">Google rating</div></div>'
+            f'<div><div style="font-size:26px;font-weight:800;color:{INK};line-height:1">{rc}</div>'
+            f'<div style="font-size:10px;color:{MUTE};text-transform:uppercase;letter-spacing:.06em;margin-top:4px">Reviews</div></div></div>')
+    rows = []
+    if gb.get("address"):
+        rows.append(("Address", gb["address"]))
+    if gb.get("phone"):
+        rows.append(("Phone", gb["phone"]))
+    if gb.get("business_status"):
+        rows.append(("Status", gb["business_status"].replace("_", " ").title()))
+    detail = "".join(_fact_card(l, v) for l, v in rows)
+    grid = f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">{detail}</div>' if detail else ""
+    note = ("" if gb.get("confident") else
+            f'<div style="font-size:11px;color:{MUTE};margin-top:10px">Best match by name — '
+            f'verify this is the correct listing.</div>')
+    return stat + grid + note
+
+
 # ─── ISSUES (with evidence) ──────────────────────────────────────────────────
 
 def _build_issues(issues):
@@ -312,13 +342,14 @@ def generate_report(audit: dict) -> str:
     positives   = audit.get("all_positives", [])
     services    = audit.get("recommended_services", [])
     summary     = audit.get("ai_summary", "")
-    email_text  = audit.get("outreach_email", "")
     contact     = audit.get("contact_details", {})
     detected    = audit.get("detected", {})
     cex         = audit.get("customer_expectations", {})
     btype       = audit.get("business_type", "default")
     btype_label = BTYPE_LABELS.get(btype) or (btype.title() if btype and btype != "default" else "Local Business")
     psi         = audit.get("psi", {})
+    google_biz  = audit.get("google_business", {})
+    pages_n     = len(audit.get("pages_audited", []) or [])
 
     ov_color, _, ov_label = _score_color(overall)
     critical_n = len([i for i in issues if i["severity"] == "critical"])
@@ -333,12 +364,6 @@ def generate_report(audit: dict) -> str:
     summary_inner = (f'<div style="font-size:13.5px;color:{SLATE};line-height:1.8;background:{SOFT};'
                      f'border:1px solid {LINE};border-left:3px solid {INK};border-radius:0 8px 8px 0;'
                      f'padding:16px 20px">{_esc(summary).replace(chr(10), "<br>")}</div>')
-    email_inner = (f'<div style="background:{SOFT};border:1px solid {LINE};border-radius:8px;padding:18px 20px">'
-                   f'<div style="font-size:9.5px;font-weight:700;color:{MUTE};text-transform:uppercase;'
-                   f'letter-spacing:.08em;margin-bottom:10px">Personalised for {_esc(biz)} · {_esc(btype_label)}</div>'
-                   f'<div style="font-size:13px;color:{INK};line-height:1.75;white-space:pre-wrap">'
-                   f'{_esc(email_text)}</div></div>')
-
     def stat(bg, color, big, small):
         return (f'<div style="text-align:center;background:{bg};border-radius:8px;padding:13px 8px">'
                 f'<div style="font-size:22px;font-weight:800;color:{color};line-height:1">{big}</div>'
@@ -385,8 +410,14 @@ def generate_report(audit: dict) -> str:
     # Sections
     p.append(_section("Executive Summary", summary_inner))
     if detected:
-        p.append(_section("What We Detected", _build_detected(detected),
-                          "The concrete evidence behind the scores in this report"))
+        detected_sub = "The concrete evidence behind the scores in this report"
+        if pages_n > 1:
+            detected_sub += f" — across {pages_n} pages of the site"
+        p.append(_section("What We Detected", _build_detected(detected), detected_sub))
+    google_inner = _build_google_business(google_biz)
+    if google_inner:
+        p.append(_section("Google Business Profile", google_inner,
+                          "Live data from the business's Google listing"))
     p.append(_section("Score Breakdown by Category", _build_score_cards(scores) + _build_psi(psi)))
     p.append(_section("Issues Found — " + str(len(issues[:14])) + " Items", _build_issues(issues)))
     p.append(_section("Contact & Lead Capture Health", _build_contact_grid(contact, detected)))
@@ -396,8 +427,6 @@ def generate_report(audit: dict) -> str:
     p.append(_section("What's Already Working", _build_positives(positives)))
     if services:
         p.append(_section("How " + AGENCY + " Can Help", _build_services_table(services)))
-    if email_text:
-        p.append(_section("Suggested Outreach Message", email_inner))
 
     # Footer
     p.append(f"<div style='background:{INK};padding:16px 44px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px'>")

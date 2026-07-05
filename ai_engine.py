@@ -41,12 +41,20 @@ if not AI_ENABLED:
           "deterministic mode. Audit is fully accurate; prose uses templates.")
 
 
+# Model id is env-overridable so it can be bumped without a code change.
+# NOTE: gemini-2.0-flash was SHUT DOWN on 2026-06-01 — do not use it. A current
+# model is required or every AI call errors and silently falls back to templates.
+# gemini-2.5-flash works on the FREE tier too (rate-limited); the paid tier just
+# removes those limits. Cost is ~$0.0005 per audit, effectively free.
+_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+
+
 def _generate(prompt: str) -> str:
     """Call Gemini. Raises if AI is disabled so callers use their fallback."""
     if not AI_ENABLED or _client is None:
         raise RuntimeError("AI disabled")
     response = _client.models.generate_content(
-        model="gemini-2.0-flash",
+        model=_MODEL,
         contents=prompt,
     )
     return response.text.strip()

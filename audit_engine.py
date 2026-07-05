@@ -27,7 +27,212 @@ PSI_API_KEY = os.getenv("PSI_API_KEY", "")
 
 _DESKTOP_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-_SUBPATHS = ["/contact", "/contact-us", "/about", "/about-us", "/enquiry"]
+# ─── MULTI-PAGE CRAWL ────────────────────────────────────────────────────────
+# We audit the WHOLE site, not just the homepage: pages are discovered from
+# sitemap.xml (authoritative) plus the homepage's internal links, then fetched
+# and their content folded into full_html so contact/CTA/trust checks see info
+# that lives on any page. Capped in count AND wall-time so a huge site can never
+# OOM the small (512MB) host or make an audit crawl forever.
+_MAX_CRAWL_PAGES = 20          # local-business sites are ~5-20 pages; covers most fully
+_CRAWL_TIME_BUDGET = 90        # seconds; hard stop on total crawl time
+_SKIP_EXT = (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".ico",
+             ".zip", ".rar", ".mp4", ".mp3", ".avi", ".mov", ".doc", ".docx",
+             ".xls", ".xlsx", ".ppt", ".pptx", ".css", ".js", ".json", ".xml", ".rss")
+# Pages worth auditing first when the cap forces a choice.
+_PRIORITY_KW = ("contact", "about", "service", "book", "enquir", "quote", "review",
+                "team", "pricing", "price", "faq", "product", "shop")
+
+
+def _discover_page_urls(base_url: str, homepage_html: str, cap: int) -> list:
+    """Same-domain page URLs to audit, sitemap-first then homepage links.
+    Returns up to `cap` URLs (excluding the homepage), most audit-relevant first."""
+    root = urlparse(base_url)
+    host = root.netloc.replace("www.", "")
+    base_norm = base_url.rstrip("/")
+    seen, found = set(), []
+
+    def add(u: str):
+        u = (u or "").split("#")[0].strip().rstrip("/")
+        if not u or u in seen:
+            return
+        p = urlparse(u)
+        if p.scheme not in ("http", "https") or p.netloc.replace("www.", "") != host:
+            return
+        if any(u.lower().endswith(ext) for ext in _SKIP_EXT):
+            return
+        seen.add(u)
+        found.append(u)
+
+    # 1. sitemap.xml — fast and authoritative (handles nested sitemap indexes).
+    try:
+        sm = requests.get(f"{root.scheme}://{root.netloc}/sitemap.xml", timeout=8,
+                          headers={"User-Agent": _DESKTOP_UA}, allow_redirects=True)
+        if sm.status_code == 200 and "<" in sm.text:
+            locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", sm.text, re.I)
+            child_maps = [l for l in locs if l.lower().endswith(".xml")]
+            for l in locs:
+                if not l.lower().endswith(".xml"):
+                    add(l)
+            for cs in child_maps[:5]:                    # cap nested sitemaps
+                try:
+                    r2 = requests.get(cs, timeout=6, headers={"User-Agent": _DESKTOP_UA})
+                    for l in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", r2.text, re.I):
+                        if not l.lower().endswith(".xml"):
+                            add(l)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 2. Internal links from the homepage — covers sites with no sitemap.
+    for m in re.findall(r'href=["\']([^"\']+)["\']', homepage_html or "", re.I):
+        add(urljoin(base_url, m))
+
+    found = [u for u in found if u != base_norm]
+    found.sort(key=lambda u: next((i for i, kw in enumerate(_PRIORITY_KW)
+                                    if kw in u.lower()), len(_PRIORITY_KW)))
+    return found[:cap]
+
+
+# ─── BLOCK / ANTI-BOT DETECTION (Tier 0 honesty guard) ───────────────────────
+# A WAF/anti-bot challenge (Cloudflare "Just a moment", Imperva "Robot Challenge
+# Screen", Akamai, DataDome, …) returns a LARGE, valid-looking HTML page that is
+# NOT the real site. Without this guard the tool "audits" the block page and
+# reports a fake low score (every content check reads as missing). This detects
+# that case so we can fail honestly instead of lying to a prospect.
+_BLOCK_STATUS = {401, 403, 406, 429, 503}
+_BLOCK_TITLE_SIGNS = (
+    "just a moment", "attention required", "robot challenge", "access denied",
+    "403 forbidden", "403 - forbidden", "forbidden", "security check",
+    "are you a robot", "are you human", "verifying you are human", "human verification",
+    "request unsuccessful", "bot verification", "ddos protection", "please wait",
+    "checking your browser", "unusual traffic", "captcha", "site is protected",
+)
+_BLOCK_BODY_SIGNS = (
+    "checking your browser before accessing", "enable javascript and cookies to continue",
+    "/cdn-cgi/challenge-platform/", "cf-challenge", "cf_chl_", "_incapsula_",
+    "please enable cookies", "ddos protection by", "performance & security by cloudflare",
+    "verify you are human", "px-captcha", "perimeterx", "datadome", "kasada",
+    "incident id", "this request was blocked", "your request has been blocked",
+)
+
+
+def _blocker_vendor(headers: dict, body_low: str) -> str:
+    """Best-effort name of the WAF/anti-bot service, for an honest error message."""
+    hv = " ".join(str(k).lower() + " " + str(v).lower() for k, v in (headers or {}).items())
+    if "cf-ray" in hv or "cloudflare" in hv or "/cdn-cgi/" in body_low:
+        return "Cloudflare"
+    if "x-datadome" in hv or "datadome" in body_low:
+        return "DataDome"
+    if "_abck" in hv or "akamai" in hv or "akamai" in body_low:
+        return "Akamai"
+    if "x-iinfo" in hv or "incap_ses" in hv or "incapsula" in body_low or "imperva" in body_low:
+        return "Imperva/Incapsula"
+    if "_px" in hv or "perimeterx" in body_low or "px-captcha" in body_low:
+        return "PerimeterX/HUMAN"
+    if "x-kpsdk" in hv or "kasada" in body_low:
+        return "Kasada"
+    return ""
+
+
+def _detect_block(fetch: dict):
+    """Return {vendor, reason, status} if this fetch is a WAF/anti-bot block or
+    challenge page rather than the real site — else None."""
+    status = fetch.get("status_code", 0) or 0
+    html = fetch.get("html", "") or ""
+    low = html[:6000].lower()
+    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+    title = (m.group(1).strip().lower() if m else "")
+    vendor = _blocker_vendor(fetch.get("headers", {}), low)
+
+    # 1. A blocking status code is never a real business homepage.
+    if status in _BLOCK_STATUS:
+        return {"vendor": vendor, "reason": f"HTTP {status}", "status": status}
+    # 2. A challenge title is high-confidence even on HTTP 200 (JS shells return 200).
+    if any(s in title for s in _BLOCK_TITLE_SIGNS):
+        return {"vendor": vendor, "reason": f"challenge page (“{title[:50]}”)", "status": status}
+    # 3. Body challenge markers — trusted only when the page is thin (real content
+    #    wouldn't be) OR a known WAF is fingerprinted in the response headers, so a
+    #    normal page merely mentioning "cloudflare" in its footer is not flagged.
+    if any(s in low for s in _BLOCK_BODY_SIGNS) and (len(html) < 15000 or vendor):
+        return {"vendor": vendor, "reason": "anti-bot challenge markers", "status": status}
+    return None
+
+
+# ─── FREE STEALTH + COOKIE-CONSENT (no paid proxy needed) ────────────────────
+# Two free upgrades that reduce how often we get blocked or read incomplete pages:
+#  1. Stealth: mask the headless-automation fingerprint so basic/misconfigured
+#     bot checks (a lot of Cloudflare setups) let us through. Not enough for
+#     enterprise WAF (Imperva/DataDome) — that still needs the paid unblocker.
+#  2. Cookie-consent auto-dismiss: click "Accept" so content behind a GDPR wall
+#     actually renders — critical for UK/EU local-business sites.
+
+# Dependency-free baseline stealth; always applied even if the library is absent.
+_STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+Object.defineProperty(navigator, 'languages', {get: () => ['en-GB','en']});
+window.chrome = window.chrome || { runtime: {} };
+"""
+
+try:
+    from playwright_stealth import Stealth as _PWStealth   # optional, heavier evasions
+except Exception:
+    _PWStealth = None
+
+
+def _apply_page_stealth(page) -> None:
+    """Best-effort stealth on a page BEFORE navigation. Degrades silently."""
+    try:
+        page.add_init_script(_STEALTH_JS)
+    except Exception:
+        pass
+    if _PWStealth is not None:
+        try:
+            _PWStealth().apply_stealth_sync(page)
+        except Exception:
+            pass
+
+
+# Consent frameworks (OneTrust, Cookiebot, …) + generic accept controls, tried
+# in order. Strong, specific matches first to avoid clicking the wrong button.
+_COOKIE_SELECTORS = (
+    "#onetrust-accept-btn-handler",
+    "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+    "#CybotCookiebotDialogBodyButtonAccept",
+    "button#accept-recommended-btn-handler",
+    "#hs-eu-confirmation-button",
+    ".cc-allow", ".cookie-accept", ".accept-cookies", "#accept-cookies",
+    "[aria-label='Accept all']", "[aria-label='Accept cookies']",
+)
+_COOKIE_TEXTS = ("accept all", "allow all", "accept cookies", "i accept",
+                 "i agree", "agree and close", "accept", "agree", "got it")
+
+
+def _dismiss_cookie_banner(page) -> bool:
+    """Click a cookie-consent 'accept' so content behind the wall renders."""
+    try:
+        for sel in _COOKIE_SELECTORS:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    el.click(timeout=1500)
+                    page.wait_for_timeout(400)
+                    return True
+            except Exception:
+                pass
+        for t in _COOKIE_TEXTS:
+            try:
+                btn = page.get_by_role("button", name=re.compile(t, re.I))
+                if btn.count() > 0:
+                    btn.first.click(timeout=1500)
+                    page.wait_for_timeout(400)
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
 
 
 def _fetch_with_browser(url: str) -> dict:
@@ -49,11 +254,13 @@ def _fetch_with_browser(url: str) -> dict:
                                   viewport={"width": 1366, "height": 900},
                                   locale="en-GB")
         page = ctx.new_page()
+        _apply_page_stealth(page)
         resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
         try:
             page.wait_for_load_state("networkidle", timeout=8000)
         except Exception:
             pass  # some sites never go idle; the DOM is already good enough
+        _dismiss_cookie_banner(page)      # reveal content behind GDPR consent walls
 
         html = page.content()
 
@@ -99,37 +306,43 @@ def _fetch_with_browser(url: str) -> dict:
         except Exception:
             size_kb = round(len(html.encode()) / 1024, 1)
 
-        # Pull key subpages (contact/about) so info living off the homepage is
-        # seen. CRITICAL: Cloudflare rate-limits reused sessions, so navigating
-        # subpages in the homepage's context returns 403 challenge shells. Each
-        # subpage is therefore fetched in a FRESH context (new session), which
-        # passes the challenge like a first visit. Capped to keep audits fast.
+        # Crawl the WHOLE site (not just the homepage) so info living on any page
+        # — contact, about, services, reviews — is seen. Pages are discovered from
+        # sitemap.xml + homepage links. CRITICAL: Cloudflare rate-limits reused
+        # sessions, so each page is fetched in a FRESH context (new session), which
+        # passes the challenge like a first visit. Capped by count AND wall-time.
         base = final_url.rstrip("/")
-        seen_urls, extra_html, collected = {base}, "", 0
-        for path in _SUBPATHS:
-            if collected >= 2:            # 2 good contact pages is plenty
+        page_urls = _discover_page_urls(base, html, _MAX_CRAWL_PAGES)
+        seen_urls, extra_html = {base}, ""
+        pages_audited = [final_url]
+        crawl_deadline = time.time() + _CRAWL_TIME_BUDGET
+        for target in page_urls:
+            if len(pages_audited) > _MAX_CRAWL_PAGES or time.time() > crawl_deadline:
                 break
             sc = None
             try:
                 sc = browser.new_context(user_agent=_DESKTOP_UA,
                                          viewport={"width": 1366, "height": 900}, locale="en-GB")
                 sp = sc.new_page()
-                r2 = sp.goto(base + path, wait_until="domcontentloaded", timeout=18000)
+                _apply_page_stealth(sp)
+                r2 = sp.goto(target, wait_until="domcontentloaded", timeout=12000)
                 try:
-                    sp.wait_for_load_state("networkidle", timeout=6000)
+                    sp.wait_for_load_state("networkidle", timeout=3000)
                 except Exception:
                     pass
+                _dismiss_cookie_banner(sp)
                 final = sp.url.rstrip("/")
                 sub = sp.content()
                 low = sub[:2500].lower()
                 is_challenge = any(m in low for m in ("just a moment", "checking your browser",
-                                                      "cf-challenge", "enable javascript to"))
-                ok = (sub and len(sub) > 8000 and final not in seen_urls
+                                                      "cf-challenge", "enable javascript to",
+                                                      "attention required"))
+                ok = (sub and len(sub) > 2000 and final not in seen_urls
                       and (r2 is None or r2.status < 400) and not is_challenge)
                 if ok:
                     seen_urls.add(final)
                     extra_html += " " + sub
-                    collected += 1
+                    pages_audited.append(sp.url)
             except Exception:
                 pass
             finally:
@@ -150,6 +363,7 @@ def _fetch_with_browser(url: str) -> dict:
         "is_https": final_url.startswith("https://"),
         "headers": headers,
         "page_size_kb": size_kb,
+        "pages_audited": pages_audited,
         "fetch_method": "browser",
         "error": None,
     }
@@ -168,23 +382,79 @@ def _fetch_with_requests(url: str) -> dict:
         elapsed = round(time.time() - start, 2)
         base = r.url.rstrip("/")
         extra_html = ""
-        for path in _SUBPATHS:
+        pages_audited = [r.url]
+        deadline = time.time() + _CRAWL_TIME_BUDGET
+        for target in _discover_page_urls(base, r.text, _MAX_CRAWL_PAGES):
+            if len(pages_audited) > _MAX_CRAWL_PAGES or time.time() > deadline:
+                break
             try:
-                sub = requests.get(base + path, timeout=8, headers=headers, allow_redirects=True)
+                sub = requests.get(target, timeout=8, headers=headers, allow_redirects=True)
                 if sub.status_code == 200 and len(sub.text) > 500:
                     extra_html += " " + sub.text
+                    pages_audited.append(sub.url)
             except Exception:
                 pass
         return {
             "html": r.text, "extra_html": extra_html, "full_html": r.text + extra_html,
             "status_code": r.status_code, "response_time": elapsed, "final_url": r.url,
             "is_https": r.url.startswith("https://"), "headers": {k.lower(): v for k, v in r.headers.items()},
-            "page_size_kb": round(len(r.content) / 1024, 1), "fetch_method": "requests", "error": None,
+            "page_size_kb": round(len(r.content) / 1024, 1), "pages_audited": pages_audited,
+            "fetch_method": "requests", "error": None,
         }
     except Exception as e:
         return {"html": "", "extra_html": "", "full_html": "", "error": str(e),
                 "is_https": False, "response_time": 0, "final_url": url,
-                "headers": {}, "page_size_kb": 0, "status_code": 0, "fetch_method": "requests"}
+                "headers": {}, "page_size_kb": 0, "status_code": 0,
+                "pages_audited": [], "fetch_method": "requests"}
+
+
+def _fetch_with_unblocker(url: str):
+    """Tier-1 paid fallback: fetch through a residential-IP unblocker that defeats
+    WAF/anti-bot challenges our own browser can't pass (Cloudflare/Imperva/etc.).
+
+    DORMANT BY DEFAULT — returns None unless UNBLOCKER_PROVIDER + its key are set,
+    so with no paid key the tool behaves exactly as before (honest 'blocked'). Only
+    the homepage is fetched here to keep paid cost to one request per blocked site."""
+    provider = os.getenv("UNBLOCKER_PROVIDER", "").strip().lower()
+    if not provider:
+        return None
+    country = os.getenv("UNBLOCKER_COUNTRY", "gb").strip().lower()
+    start = time.time()
+    try:
+        if provider == "scrapingbee":
+            key = os.getenv("SCRAPINGBEE_API_KEY", "").strip()
+            if not key:
+                return None
+            r = requests.get("https://app.scrapingbee.com/api/v1/", timeout=75, params={
+                "api_key": key, "url": url, "render_js": "true",
+                "premium_proxy": "true", "country_code": country})
+            html, status, final = r.text, r.status_code, url
+        elif provider == "brightdata":
+            # Full proxy URL incl. auth, e.g. http://brd-customer-..-zone-..:pass@brd.superproxy.io:22225
+            proxy = os.getenv("BRIGHTDATA_PROXY", "").strip()
+            if not proxy:
+                return None
+            import urllib3
+            urllib3.disable_warnings()  # unblocker proxies use their own TLS chain
+            r = requests.get(url, timeout=75, verify=False,
+                             proxies={"http": proxy, "https": proxy},
+                             headers={"User-Agent": _DESKTOP_UA})
+            html, status, final = r.text, r.status_code, r.url
+        else:
+            print(f"[unblocker] unknown UNBLOCKER_PROVIDER='{provider}'")
+            return None
+    except Exception as e:
+        print(f"[unblocker] {provider} failed: {e}")
+        return None
+
+    elapsed = round(time.time() - start, 2)
+    return {
+        "html": html, "extra_html": "", "full_html": html,
+        "status_code": status, "response_time": elapsed, "final_url": final,
+        "is_https": str(final).startswith("https://"), "headers": {},
+        "page_size_kb": round(len(html.encode()) / 1024, 1),
+        "pages_audited": [final], "fetch_method": f"unblocker:{provider}", "error": None,
+    }
 
 
 _MIN_USABLE_HTML = 2000  # bytes; below this the fetch likely failed / was blocked
@@ -209,15 +479,38 @@ def fetch_page(url: str) -> dict:
     except Exception as e:
         print(f"[fetch] browser unavailable ({e}); using requests")
 
-    if browser_result and len(browser_result.get("html", "")) >= _MIN_USABLE_HTML:
+    # Accept the browser render only if it's big enough AND not a block/challenge
+    # page. A WAF block page is large and valid-looking, so the size check alone
+    # (the old bug) would wave it through and audit the block page.
+    if (browser_result and len(browser_result.get("html", "")) >= _MIN_USABLE_HTML
+            and not _detect_block(browser_result)):
         return browser_result
 
     req_result = _fetch_with_requests(url)
     candidates = [r for r in (browser_result, req_result) if r and r.get("html")]
     if not candidates:
         return req_result  # carries the real error message
-    # Whichever fetch actually captured more real content wins.
-    return max(candidates, key=lambda r: len(r["html"]))
+
+    # Prefer any candidate that is NOT a block page; among those, most content.
+    unblocked = [r for r in candidates if not _detect_block(r)]
+    if unblocked:
+        return max(unblocked, key=lambda r: len(r["html"]))
+
+    # Everything our own fetchers got was a block page. Last resort: a paid
+    # residential-IP unblocker, IF one is configured (dormant otherwise).
+    ub = _fetch_with_unblocker(url)
+    if ub and len(ub.get("html", "")) >= _MIN_USABLE_HTML and not _detect_block(ub):
+        print(f"[fetch] recovered a blocked site via {ub['fetch_method']}")
+        return ub
+
+    # Still blocked (no unblocker configured, or it also failed). Return the best
+    # shell but TAG it so run_audit refuses to score it and reports honestly.
+    best = max(candidates, key=lambda r: len(r["html"]))
+    block = _detect_block(best) or {}
+    best["blocked"] = True
+    best["block_vendor"] = block.get("vendor", "")
+    best["block_reason"] = block.get("reason", "anti-bot protection")
+    return best
 
 
 # ─── EVIDENCE HELPERS ───────────────────────────────────────────────────────
@@ -1036,7 +1329,14 @@ def _merge_ai_results(regex_result: dict, ai_result: dict, category: str) -> dic
 _PARKING_SIGNS = ["forsale", "godaddy.com/forsale", "sedoparking", "parkingcrew",
                   "bodis.com", "afternic", "hugedomains", "domain for sale",
                   "buy this domain", "domain is for sale", "access denied",
-                  "this domain may be for sale"]
+                  "this domain may be for sale",
+                  # Soft-404 / placeholder / not-yet-live pages: a 200 status but
+                  # no real business site to audit.
+                  "under construction", "coming soon", "site coming soon",
+                  "website coming soon", "account suspended", "site suspended",
+                  "this account has been suspended", "future home of",
+                  "default web page", "welcome to nginx", "apache2 ubuntu default",
+                  "site not found", "website disabled", "this site is temporarily unavailable"]
 
 
 def _looks_parked_or_dead(fetch: dict) -> bool:
@@ -1048,12 +1348,83 @@ def _looks_parked_or_dead(fetch: dict) -> bool:
     return any(sign in blob for sign in _PARKING_SIGNS)
 
 
+def fetch_google_business(business_name: str, domain: str, hint: str = "") -> dict:
+    """Real Google Business Profile data (rating, review count, hours, address).
+
+    DORMANT BY DEFAULT — returns {} unless GOOGLE_PLACES_API_KEY is set, so the
+    tool behaves exactly as before without a key. Uses Places API (New) Text
+    Search, then confirms the match by comparing the result's website to the
+    audited domain so we don't attach a different business's reviews."""
+    key = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
+    if not key:
+        return {}
+    region = os.getenv("GOOGLE_PLACES_REGION", "GB").strip().upper()
+    query = " ".join(p for p in (business_name, hint) if p).strip() or domain
+    try:
+        r = requests.post(
+            "https://places.googleapis.com/v1/places:searchText",
+            timeout=15,
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": key,
+                "X-Goog-FieldMask": ("places.id,places.displayName,places.rating,"
+                    "places.userRatingCount,places.formattedAddress,"
+                    "places.nationalPhoneNumber,places.internationalPhoneNumber,"
+                    "places.regularOpeningHours.weekdayDescriptions,"
+                    "places.websiteUri,places.googleMapsUri,places.businessStatus"),
+            },
+            json={"textQuery": query, "maxResultCount": 5, "regionCode": region},
+        )
+        if r.status_code != 200:
+            print(f"[places] API {r.status_code}: {r.text[:160]}")
+            return {}
+        places = r.json().get("places", []) or []
+    except Exception as e:
+        print(f"[places] lookup failed: {e}")
+        return {}
+    if not places:
+        return {}
+
+    # Prefer the result whose website matches the audited domain (confident match);
+    # otherwise fall back to the top result but flag it as unconfirmed.
+    host = domain.replace("www.", "").lower()
+    chosen, confident = places[0], False
+    for pl in places:
+        site = (pl.get("websiteUri", "") or "").lower()
+        if host and host in site:
+            chosen, confident = pl, True
+            break
+
+    return {
+        "matched": True,
+        "confident": confident,
+        "name": (chosen.get("displayName", {}) or {}).get("text", ""),
+        "rating": chosen.get("rating"),
+        "review_count": chosen.get("userRatingCount", 0),
+        "address": chosen.get("formattedAddress", ""),
+        "phone": chosen.get("nationalPhoneNumber") or chosen.get("internationalPhoneNumber", ""),
+        "hours": (chosen.get("regularOpeningHours", {}) or {}).get("weekdayDescriptions", []),
+        "maps_uri": chosen.get("googleMapsUri", ""),
+        "website": chosen.get("websiteUri", ""),
+        "business_status": chosen.get("businessStatus", ""),
+    }
+
+
 def run_audit(url: str) -> dict:
     """Run the full website audit — regex baseline + AI enhancement."""
     print(f"[Audit] Fetching: {url}")
     fetch = fetch_page(url)
     if fetch.get("error"):
         return {"error": fetch["error"], "url": url}
+    if fetch.get("blocked"):
+        vendor = fetch.get("block_vendor") or "a security / anti-bot service"
+        reason = fetch.get("block_reason", "")
+        return {"error": (f"This site is protected by {vendor} and blocked our automated "
+                          f"access ({reason}), so we could not read the real page. No audit "
+                          f"was run — scoring the block page would give false results. "
+                          f"The site itself may be perfectly fine; try again later or from a "
+                          f"residential connection."),
+                "url": url, "blocked": True, "block_vendor": fetch.get("block_vendor", "")}
     if _looks_parked_or_dead(fetch):
         return {"error": ("This site could not be loaded for a real audit — it looks offline, "
                           "parked, for sale, or is blocking automated access."), "url": url}
@@ -1120,11 +1491,32 @@ def run_audit(url: str) -> dict:
 
     biz_name = domain.split(".")[0].replace("-", " ").replace("_", " ").title()
 
+    # ── OPTIONAL: real Google Business data (dormant unless GOOGLE_PLACES_API_KEY
+    #    is set). Turns "we detected a reviews link" into "you have 87 reviews at
+    #    4.2★" — and surfaces the strongest sales angle: real reviews the site
+    #    doesn't show. Never affects behaviour when no key is configured.
+    google_biz = fetch_google_business(biz_name, domain, seo.get("title", ""))
+    if google_biz.get("matched"):
+        rc = google_biz.get("review_count") or 0
+        rating = google_biz.get("rating")
+        shows_reviews = any("review" in p.lower() for p in all_positives)
+        if rc and not shows_reviews:
+            all_issues.insert(0, {
+                "severity": "medium", "category": "Trust & Reviews",
+                "issue": f"{rc} Google reviews ({rating}★) are not shown on the website",
+                "fix": "Embed a Google reviews widget so visitors see your reputation "
+                       "without leaving the site.",
+                "impact_key": "reviews_not_displayed"})
+        elif rc:
+            all_positives.append(f"Strong Google presence — {rc} reviews ({rating}★)")
+
     return {
         "url": fetch["final_url"], "domain": domain, "business_name": biz_name,
         "business_type": business_type, "overall_score": overall,
         "is_https": fetch["is_https"], "response_time": fetch["response_time"],
         "page_size_kb": fetch["page_size_kb"],
+        "pages_audited": fetch.get("pages_audited", [fetch["final_url"]]),
+        "google_business": google_biz,
         "scores": {
             "seo": seo["score"], "contact": contact["score"],
             "cta": cta["score"], "trust": trust["score"],
@@ -1153,6 +1545,8 @@ def run_audit(url: str) -> dict:
             "ctas_found": cta.get("ctas_found", []),
             "social_platforms": trust.get("social_platforms", []),
             "review_sources": trust.get("review_sources", []),
+            "google_rating": google_biz.get("rating"),
+            "google_review_count": google_biz.get("review_count"),
             "is_https": fetch["is_https"],
             "response_time": fetch["response_time"],
         },

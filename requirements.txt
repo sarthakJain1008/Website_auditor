@@ -3,6 +3,7 @@ lxml
 httpx
 requests
 playwright>=1.40
+playwright-stealth>=2.0
 google-genai
 python-dotenv
 pandas
