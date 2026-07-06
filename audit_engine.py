@@ -1355,7 +1355,7 @@ _PARKING_SIGNS = ["forsale", "godaddy.com/forsale", "sedoparking", "parkingcrew"
 # they only count when the page is small. A full business homepage that merely
 # mentions them is NOT dead. (Gating these to thin pages fixes the false-positive
 # that mislabelled real sites like Auditel as "parked".)
-_DEAD_SIGNS = ["access denied", "under construction", "coming soon",
+_DEAD_SIGNS = ["under construction", "coming soon",
                "site coming soon", "website coming soon", "account suspended",
                "site suspended", "this account has been suspended", "future home of",
                "default web page", "welcome to nginx", "apache2 ubuntu default",
@@ -1363,11 +1363,11 @@ _DEAD_SIGNS = ["access denied", "under construction", "coming soon",
 
 
 def _looks_parked_or_dead(fetch: dict) -> bool:
-    """True if the fetch is too thin to be a real site, or is a parking/for-sale page.
-    WAF 'Access Denied' blocks are handled earlier by _detect_block, not here."""
+    """True only for a genuine parking / for-sale / placeholder page. A thin or
+    empty response is NOT treated as 'parked' here — that's handled as a block in
+    run_audit, because a near-empty reply is almost always a bot-challenge stub,
+    not a domain that's actually for sale."""
     html = fetch.get("html", "") or ""
-    if len(html) < 1000:  # a real business homepage is never this small
-        return True
     blob = (fetch.get("final_url", "") + " " + html[:3000]).lower()
     # Hard parking/for-sale signs — unambiguous, always mean "not a real site".
     if any(sign in blob for sign in _PARKING_SIGNS):
@@ -1466,9 +1466,20 @@ def run_audit(url: str) -> dict:
                 "url": url, "blocked": True, "block_vendor": fetch.get("block_vendor", ""),
                 "diag": diag}
     if _looks_parked_or_dead(fetch):
-        return {"error": ("We couldn't read a real page here — the site may be blocking "
-                          "automated access, or the page is empty, parked, or not yet live."),
-                "url": url, "diag": diag}
+        return {"error": ("This domain looks parked, for sale, or not yet live — there is no "
+                          "real website here to audit."), "url": url, "diag": diag}
+    # Near-empty / bot-challenge response: the site IS live, but we couldn't read a
+    # real page (a WAF challenge stub, or JS we can't run on this server). Report it
+    # as a block with the specific reason — NOT "parked".
+    if len(fetch.get("html", "") or "") < _MIN_USABLE_HTML:
+        _st, _sz = fetch.get("status_code"), fetch.get("page_size_kb")
+        return {"error": (f"This site blocked our automated audit. The server returned a "
+                          f"near-empty security-challenge response (HTTP {_st}, {_sz} KB, no "
+                          f"page content) — its bot-protection stops automated tools from "
+                          f"reading the page. The business's website itself is fine; it just "
+                          f"can't be audited automatically without a residential unblocker."),
+                "url": url, "blocked": True, "block_vendor": fetch.get("block_vendor", ""),
+                "diag": diag}
 
     full_html = fetch.get("full_html", fetch["html"])
     soup = BeautifulSoup(fetch["html"], "lxml")

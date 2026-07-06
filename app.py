@@ -320,14 +320,9 @@ if run_btn and url_input.strip():
                     unsafe_allow_html=True)
 
             if audit.get("blocked"):
-                vendor = audit.get("block_vendor") or "security / anti-bot protection"
                 _notice(
                     f"🛡️ <code>{url}</code> is live — but it blocks automated audits",
-                    f"This site is protected by <b>{vendor}</b>, which stops bots (including this tool) "
-                    f"from reading the page. <b>The business itself is perfectly fine</b> — we just can't "
-                    f"audit it automatically from a datacenter connection.<br><br>"
-                    f"A residential unblocker would get through; otherwise this particular site can't be "
-                    f"audited automatically.",
+                    f"{err}",
                     "#d97706")
             elif any(w in low for w in ["parked", "offline", "for sale", "could not be loaded"]):
                 _notice(
